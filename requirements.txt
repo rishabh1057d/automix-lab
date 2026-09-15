@@ -1,0 +1,9 @@
+fastapi==0.115.12
+uvicorn==0.34.2
+python-multipart==0.0.20
+numpy==1.26.4
+scipy==1.14.1
+soundfile==0.13.1
+audiotsm==0.1.2
+beat-this==1.1.0
+httpx==0.28.1

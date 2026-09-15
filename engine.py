@@ -1,0 +1,369 @@
+"""Offline audio analysis and mixing. Original implementation; no Spotify audio access."""
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import math
+import os
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
+import soundfile as sf
+from scipy import signal
+
+SR = 44100
+VERSION = "analysis-3-small0"
+
+
+def decode(path: Path) -> np.ndarray:
+    try:
+        info = sf.info(path)
+        if info.channels not in (1, 2) or not 0 < info.duration <= 600:
+            raise ValueError("Audio must be mono/stereo and between 0 and 10 minutes.")
+        audio, rate = sf.read(path, dtype="float32", always_2d=True)
+    except (RuntimeError, sf.LibsndfileError) as exc:
+        raise ValueError("The file is not supported, decodable audio.") from exc
+    if not np.isfinite(audio).all():
+        raise ValueError("Audio contains non-finite samples.")
+    if rate != SR:
+        common = math.gcd(rate, SR)
+        audio = signal.resample_poly(audio, SR // common, rate // common).astype(np.float32)
+    return np.repeat(audio, 2, axis=1) if audio.shape[1] == 1 else audio
+
+
+def peaks(audio: np.ndarray, count: int = 1200) -> list:
+    width = max(1, math.ceil(len(audio) / count))
+    return [round(float(np.max(np.abs(audio[i:i + width]))), 5)
+            for i in range(0, len(audio), width)]
+
+
+@lru_cache(maxsize=1)
+def _model():
+    import torch
+    from beat_this.inference import Audio2Beats
+    torch.set_num_threads(min(4, os.cpu_count() or 1))
+    return Audio2Beats(checkpoint_path="small0", device="cpu", dbn=False)
+
+
+def _beats(audio: np.ndarray, progress=None) -> dict:
+    """Only measure head and tail; never extrapolate a fictitious full-song grid."""
+    from beat_this.inference import Audio2Frames
+    model = _model()
+    duration = len(audio) / SR
+    starts = [0.0] if duration <= 35 else [0.0, max(30.0, duration - 30.0)]
+    beats, downbeats, confidences, intervals, local_tempos = [], [], [], [], []
+    for i, start in enumerate(starts):
+        if progress:
+            progress(f"Beat This! analyzing {'head' if i == 0 else 'tail'}")
+        chunk = audio[round(start * SR):round(min(duration, start + 35 if len(starts) == 1 else start + 30) * SR)]
+        logits, down_logits = Audio2Frames.__call__(model, chunk, SR)
+        beat, downbeat = model.frames2beats(logits, down_logits)
+        beat = np.asarray(beat)
+        delta = np.diff(beat)
+        valid = delta[(delta >= 60 / 220) & (delta <= 60 / 40)]
+        confidence = 0.0
+        if len(valid) >= 6:
+            median = float(np.median(valid))
+            regularity = float(np.mean(np.abs(valid - median) < median * .10))
+            positions = np.clip(np.rint(beat * 50).astype(int), 0, len(logits) - 1)
+            evidence = float(logits.sigmoid().cpu().numpy()[positions].mean())
+            coverage = min(1.0, len(valid) * median / max(1, len(chunk) / SR) / .65)
+            confidence = evidence * regularity * coverage
+            intervals.extend(valid.tolist())
+            local_tempos.append(60 / median)
+        confidences.append(confidence)
+        beats.extend((beat + start).tolist())
+        downbeats.extend((np.asarray(downbeat) + start).tolist())
+    stable = not local_tempos or max(local_tempos) / min(local_tempos) <= 1.04
+    confidence = min(confidences) if stable else min(.19, min(confidences))
+    return {"beats": sorted(set(beats)), "downbeats": sorted(set(downbeats)),
+            "bpm": round(60 / float(np.median(intervals)), 2) if intervals else 0.0,
+            "beat_confidence": round(confidence, 3), "beat_source": "Beat This! small0 (head/tail)",
+            "beat_warning": None if stable else "Head/tail tempos disagree; track may change tempo, so stretching is disabled."}
+
+
+def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
+    path, cache_dir = Path(path), Path(cache_dir)
+    with path.open("rb") as stream:
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached = cache_dir / f"{VERSION}-{digest}.json"
+    if cached.exists():
+        try:
+            result = json.loads(cached.read_text(encoding="utf-8"))
+            return dict(result, cache_hit=True)
+        except (ValueError, OSError):
+            pass
+    audio = decode(path)
+    duration = len(audio) / SR
+    hop = SR // 4
+    energy, vocal = [], []
+    frequencies = np.fft.rfftfreq(hop, 1 / SR)
+    voice_band = (frequencies >= 250) & (frequencies <= 4000)
+    previous = 0.0
+    for start in range(0, len(audio), hop):
+        frame = audio[start:start + hop]
+        rms = float(np.sqrt(np.mean(frame * frame)))
+        energy.append(rms)
+        center = frame.mean(axis=1)
+        spectrum = np.abs(np.fft.rfft(center, n=hop)) ** 2
+        band = spectrum[voice_band] + 1e-15
+        band_fraction = float(band.sum() / (spectrum.sum() + 1e-12))
+        flatness = float(np.exp(np.log(band).mean()) / band.mean())
+        centered = float(np.mean(center ** 2) / (np.mean(frame ** 2) + 1e-12))
+        percussive = max(0.0, (rms - previous) / (rms + 1e-8))
+        vocal.append(float(np.clip(band_fraction * centered * (1 - flatness) * (1 - .7 * percussive), 0, 1)))
+        previous = rms
+    reference = float(np.quantile(energy, .85))
+    active = np.flatnonzero(np.asarray(energy) > max(1e-5, reference * .1))
+    audible_start = float(active[0] / 4) if len(active) else 0.0
+    content_end = min(duration, float((active[-1] + 1) / 4)) if len(active) else duration
+    try:
+        beat = _beats(audio, progress) if reference > 1e-5 and duration >= 8 else {
+            "beats": [], "downbeats": [], "bpm": 0.0, "beat_confidence": 0.0,
+            "beat_source": "unavailable", "beat_warning": "Silent or very short audio: beat analysis skipped."}
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Beat This! inference unavailable for %s", path.name)
+        beat = {"beats": [], "downbeats": [], "bpm": 0.0, "beat_confidence": 0.0,
+                "beat_source": "unavailable", "beat_warning": f"Beat model unavailable ({type(exc).__name__}); safe crossfade used."}
+    result = dict(beat, duration=duration, audible_start=audible_start, content_end=content_end,
+                  energy=[round(x, 6) for x in energy], vocal=[round(x, 4) for x in vocal],
+                  vocal_source="DSP heuristic; instruments can resemble voices; not singer-onset detection",
+                  waveform=peaks(audio), sha256=digest, cache_hit=False)
+    # Failed model downloads are retryable; do not turn one outage into a permanent cached fallback.
+    if beat["beat_source"] != "unavailable" or duration < 8 or reference <= 1e-5:
+        temporary = cached.with_suffix(".tmp")
+        temporary.write_text(json.dumps(result, allow_nan=False), encoding="utf-8")
+        temporary.replace(cached)
+    return result
+
+
+def _activity(analysis: dict, times: np.ndarray) -> np.ndarray:
+    values = np.asarray(analysis.get("vocal", [0.0]))
+    return values[np.clip((times * 4).astype(int), 0, len(values) - 1)]
+
+
+def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: float) -> float:
+    times = np.arange(0, max(.25, duration), .25)
+    return float(np.mean((_activity(a, start + times) >= .6) &
+                         (_activity(b, cue + times * rate) >= .6)))
+
+
+def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
+    plain = mode == "plain"
+    ca, cb = a["beat_confidence"], b["beat_confidence"]
+    bpm_a, bpm_b = a["bpm"], b["bpm"]
+    short = min(a["duration"], b["duration"]) < 45
+    ratios = [bpm_a / (bpm_b * factor) for factor in (.5, 1, 2)] if bpm_a and bpm_b else [1.0]
+    ratio = min(ratios, key=lambda value: abs(value - 1))
+    reasons = []
+    if plain:
+        tier, rate = "plain-crossfade", 1.0
+        reasons.append("A/B reference: six-second equal-power fade, full track beginnings.")
+    elif short or not (40 <= bpm_a <= 220 and 40 <= bpm_b <= 220) or max(ca, cb) < .2:
+        tier, rate = "safe-crossfade", 1.0
+        reasons.append("Short track or insufficient measured beat evidence: conservative crossfade.")
+    elif min(ca, cb) >= .55 and abs(ratio - 1) <= .04000001:
+        tier, rate = "beatmatched", ratio
+        reasons.append("Both measured beat grids are confident; tempo correction is within ±4%.")
+    else:
+        tier, rate = "dj-assisted", 1.0
+        reasons.append("Tempo distance or beat confidence prevents stretching; structural cues and EQ remain available.")
+    for item in (a, b):
+        if item.get("beat_warning"):
+            reasons.append(item["beat_warning"])
+    overlap = 6.0 if plain or tier == "safe-crossfade" else float(np.clip(8 * 60 / bpm_a, 4, 12))
+    overlap = min(overlap, a["duration"] / 3, b["duration"] / 3)
+    end = a["duration"] if plain else a["content_end"]
+    cue = 0.0 if plain else b["audible_start"]
+    if tier in ("beatmatched", "dj-assisted"):
+        incoming = [t for t in b.get("downbeats", [])
+                    if b["audible_start"] <= t <= min(b["audible_start"] + 12, b["duration"] - overlap * rate - 3)]
+        curve = np.asarray(b.get("energy", [0.0]))
+        def entry_score(t):
+            at = min(len(curve) - 1, round(t * 4))
+            before = float(curve[max(0, at - 8):max(1, at)].mean())
+            after = float(curve[at:min(len(curve), at + 8)].mean())
+            rise = (after - before) / (max(after, before) + 1e-8)
+            voice = float(_activity(b, np.arange(t, t + overlap, .25)).mean())
+            return rise * .6 - voice * .35 - (t - b["audible_start"]) * .015
+        if incoming:
+            cue = max(incoming, key=entry_score)
+            reasons.append("Incoming downbeat selected by energy rise, instrumental runway, and ≤12-second intro budget.")
+        # Anchor the start of the overlap to a measured outgoing downbeat.
+        starts = [t for t in a.get("downbeats", []) if end - 12 <= t + overlap <= end and t >= overlap]
+        if starts:
+            start = max(starts)
+            end = start + overlap
+            reasons.append("Outgoing overlap begins on a measured downbeat near the audible ending.")
+    outgoing_span = end if plain else max(1 / SR, end - a["audible_start"])
+    incoming_end = b["duration"] if plain else b["content_end"]
+    overlap = min(overlap, outgoing_span / 3, max(1 / SR, (incoming_end - cue) / 3))
+    start = end - overlap
+    clash = _clash(a, b, start, cue, overlap, rate)
+    if not plain and tier != "safe-crossfade" and clash > .05:
+        reduced = max(4.0, overlap / 2)
+        if reduced < overlap and a["content_end"] - (start + reduced) <= 12:
+            alternative = _clash(a, b, start, cue, reduced, rate)
+            if alternative < clash:
+                overlap, end, clash = reduced, start + reduced, alternative
+                reasons.append("Shorter overlap reduces simultaneous voice-like activity.")
+        if clash > .05:
+            reasons.append("Voice-like overlap detected by heuristic; complementary mid-band attenuation applied.")
+    bass = overlap * .7
+    nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .4 <= t - start <= overlap * .9]
+    if nearby:
+        bass = min(nearby, key=lambda t: abs(t - bass))
+    return {"tier": tier, "outgoing_start": start, "outgoing_end": end, "incoming_cue": cue,
+            "overlap_seconds": overlap, "overlap_beats": overlap * bpm_a / 60 if bpm_a else 0,
+            "incoming_playback_rate": rate, "bass_handoff_seconds": bass, "vocal_overlap": clash,
+            "confidence": min(ca, cb), "reasons": reasons}
+
+
+def stretch_intro(audio: np.ndarray, rate: float, overlap: float) -> tuple[np.ndarray, dict]:
+    """WSOLA at transition tempo, 2s rate ramp, then waveform-aligned original audio."""
+    if abs(rate - 1) < 1e-5:
+        return audio, {"source_resume": 0.0, "output_resume": 0.0, "rate_ramp_seconds": 0.0}
+    from audiotsm import wsola
+    from audiotsm.io.array import ArrayReader, ArrayWriter
+    tsm = wsola(channels=2, speed=rate, frame_length=2048, synthesis_hop=512)
+    reader, writer = ArrayReader(audio.T), ArrayWriter(channels=2)
+    target = round(min(overlap + 2.0, len(audio) / SR - .2) * SR)
+    written, consumed_nominal = 0, 0.0
+    while written < target:
+        time = written / SR
+        current_rate = rate + (1 - rate) * np.clip((time - overlap) / 2.0, 0, 1)
+        # AudioTSM uses integer analysis hops; account for the actual quantized ratio.
+        effective = int(512 * current_rate) / 512
+        tsm.set_speed(current_rate)
+        tsm.read_from(reader)
+        count, _ = tsm.write_to(writer)
+        written += count
+        consumed_nominal += count * effective
+        if reader.empty and count == 0:
+            break
+    rendered = writer.data.T.copy()
+    if len(rendered) < 2048:
+        raise ValueError("Track too short for tempo correction.")
+    cross = 1024
+    expected = round(consumed_nominal) - cross
+    left, right = max(0, expected - 4096), min(len(audio) - cross, expected + 4096)
+    template = rendered[-cross:].mean(axis=1)
+    search = audio[left:right + cross].mean(axis=1)
+    correlation = signal.correlate(search, template, mode="valid", method="fft")
+    energy = signal.convolve(search ** 2, np.ones(cross), mode="valid", method="fft")
+    match = left + int(np.argmax(correlation / np.sqrt(np.maximum(energy, 1e-12))))
+    blend = np.linspace(0, 1, cross, dtype=np.float32)[:, None]
+    rendered[-cross:] = rendered[-cross:] * (1 - blend) + audio[match:match + cross] * blend
+    resumed = match + cross
+    return np.concatenate((rendered, audio[resumed:])), {
+        "source_resume": resumed / SR, "output_resume": len(rendered) / SR,
+        "rate_ramp_seconds": 2.0}
+
+
+def _filter_sweep(audio: np.ndarray, cutoffs: list[float], kind: str) -> np.ndarray:
+    """Crossfade adjacent fixed filters: continuously moving tone without coefficient jumps."""
+    position = np.linspace(0, len(cutoffs) - 1, len(audio), dtype=np.float32)
+    result = np.zeros_like(audio)
+    for i, cutoff in enumerate(cutoffs):
+        filtered = signal.sosfilt(signal.butter(2, cutoff, btype=kind, fs=SR, output="sos"), audio, axis=0)
+        weight = np.maximum(0, 1 - np.abs(position - i))[:, None]
+        result += (filtered * weight).astype(np.float32)
+    return result
+
+
+def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.ndarray:
+    n = min(len(outgoing), len(incoming))
+    outgoing, incoming = outgoing[:n], incoming[:n]
+    x = np.linspace(0, 1, n, dtype=np.float32)[:, None]
+    if plan["tier"] in ("beatmatched", "dj-assisted"):
+        wet = .55 * np.sin(np.pi * x)
+        outgoing = outgoing * (1 - wet) + _filter_sweep(outgoing, [18000, 8000, 3000, 1200], "lowpass") * wet
+        incoming = incoming * (1 - wet) + _filter_sweep(incoming, [1200, 500, 150, 20], "highpass") * wet
+        low = signal.butter(2, 200, fs=SR, output="sos")
+        a_low = signal.sosfilt(low, outgoing, axis=0).astype(np.float32)
+        b_low = signal.sosfilt(low, incoming, axis=0).astype(np.float32)
+        handoff = plan["bass_handoff_seconds"] / plan["overlap_seconds"]
+        bass_gain = np.clip((x - handoff + .1) / .2, 0, 1)
+        # Smooth bass exchange while preserving the exact full-band signal at both endpoints.
+        outgoing = outgoing - a_low * bass_gain
+        incoming = incoming - b_low * (1 - bass_gain)
+        if plan["vocal_overlap"] > .05:
+            middle = signal.butter(2, [250, 4000], btype="bandpass", fs=SR, output="sos")
+            a_mid = signal.sosfilt(middle, outgoing, axis=0).astype(np.float32)
+            b_mid = signal.sosfilt(middle, incoming, axis=0).astype(np.float32)
+            outgoing -= a_mid * (.45 * np.sin(np.pi * x) * x)
+            incoming -= b_mid * (.45 * np.sin(np.pi * x) * (1 - x))
+    return outgoing * np.cos(x * np.pi / 2) + incoming * np.sin(x * np.pi / 2)
+
+
+def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path, progress=None) -> dict:
+    if mode not in ("automix", "plain") or not 2 <= len(tracks) <= 8:
+        raise ValueError("Choose automix/plain and between 2 and 8 tracks.")
+    notify = progress or (lambda *args: None)
+    analyses = []
+    for i, track in enumerate(tracks):
+        notify("analyzing", int(i / len(tracks) * 55), f"Analyzing {track['title']} ({i + 1} of {len(tracks)})")
+        analyses.append(analyze(Path(track["path"]), cache_dir,
+                                lambda msg, i=i: notify("analyzing", int(i / len(tracks) * 55), msg)))
+    notify("planning", 55, "Selecting structural cues and transition tiers")
+    current = decode(Path(tracks[0]["path"]))
+    segments, transitions = [], []
+    timeline = 0.0
+    source_offset = 0.0
+    track_details = [dict(id=t["id"], title=t["title"], **a) for t, a in zip(tracks, analyses)]
+    track_details[0].update(timeline_start=0.0, incoming_cue=0.0, source_resume=0.0, output_resume=0.0)
+    for i in range(len(tracks) - 1):
+        notify("rendering", 55 + int(i / (len(tracks) - 1) * 35), f"Rendering transition {i + 1} of {len(tracks) - 1}")
+        plan = plan_transition(analyses[i], analyses[i + 1], mode)
+        # Source positions after the first transition's rate ramp map with slope 1.
+        end = round((plan["outgoing_end"] - source_offset) * SR)
+        n = round(plan["overlap_seconds"] * SR)
+        if end <= 1:
+            # A stale or contradictory analysis must never produce negative timeline slices.
+            end = len(current)
+            plan["tier"] = "safe-crossfade"
+            plan["incoming_playback_rate"] = 1.0
+            plan["reasons"].append("Audible ending precedes available audio; fading the remaining samples conservatively.")
+        end = max(1, min(len(current), end))
+        n = min(n, max(1, end // 2))
+        start = end - n
+        incoming_full = decode(Path(tracks[i + 1]["path"]))
+        cue_sample = round(plan["incoming_cue"] * SR)
+        incoming, mapping = stretch_intro(incoming_full[cue_sample:], plan["incoming_playback_rate"], n / SR)
+        n = min(n, len(incoming))
+        start = end - n
+        plan["outgoing_start"] = source_offset + start / SR
+        plan["outgoing_end"] = source_offset + end / SR
+        plan["overlap_beats"] = n / SR * analyses[i]["bpm"] / 60 if analyses[i]["bpm"] else 0.0
+        plan["bass_handoff_seconds"] = min(n / SR, plan["bass_handoff_seconds"])
+        transition_start = timeline + start / SR
+        plan.update(index=i, outgoing_title=tracks[i]["title"], incoming_title=tracks[i + 1]["title"],
+                    timeline_start=transition_start, timeline_end=transition_start + n / SR,
+                    overlap_seconds=n / SR, **mapping)
+        segments.extend((current[:start], blend_audio(current[start:end], incoming[:n], plan)))
+        timeline += end / SR
+        current = incoming[n:]
+        source_offset = plan["incoming_cue"] + mapping["source_resume"] - mapping["output_resume"] + n / SR
+        track_details[i + 1].update(timeline_start=transition_start, incoming_cue=plan["incoming_cue"], **mapping)
+        transitions.append(plan)
+    segments.append(current)
+    notify("rendering", 94, "Writing audio and waveform")
+    audio = np.concatenate(segments)
+    peak = float(np.max(np.abs(audio)))
+    ceiling = 10 ** (-1 / 20)
+    attenuation = min(1.0, ceiling / max(peak, 1e-12))
+    audio *= attenuation
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sf.write(output_dir / "mix.wav", audio, SR, subtype="PCM_24")
+    result = {"mode": mode, "duration": len(audio) / SR, "sample_rate": SR,
+              "tracks": track_details, "transitions": transitions, "waveform": peaks(audio, 1800),
+              "peak_dbfs": round(20 * math.log10(max(peak * attenuation, 1e-12)), 3),
+              "analysis_cache_hits": sum(a["cache_hit"] for a in analyses),
+              "gain_reduction_db": round(-20 * math.log10(attenuation), 3)}
+    (output_dir / "plan.json").write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
+    notify("complete", 100, "Mix ready")
+    return result
