@@ -69,6 +69,31 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(fallback["vocal_evidence"], "heuristic")
         self.assertEqual(fallback["vocal_duck_db"], 0)
 
+        a, b = analysis(120, bpm=100), analysis(120, bpm=100)
+        a.update(content_end=104.8, downbeats=[100], vocal=[1.] * 480)
+        b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 4 + [0.] * 460)
+        shortened = engine.plan_transition(a, b)
+        self.assertEqual(shortened["outgoing_start"], 100)
+        self.assertEqual(shortened["overlap_seconds"], 4)
+
+    def test_unmeasured_vocals_are_unknown_and_safe_tier_never_claims_duck(self):
+        a, b = analysis(120), analysis(120, cue=40)
+        for item in (a, b):
+            item["vocal"] = [.5] * 480
+            item["vocal_windows"] = [[0, 30], [90, 120]]
+        a.update(content_end=44, downbeats=[40])
+        b["downbeats"] = [40]
+        unknown = engine.plan_transition(a, b)
+        self.assertEqual(unknown["vocal_evidence"], "unavailable")
+        self.assertEqual(unknown["vocal_overlap"], 0)
+        self.assertEqual(unknown["vocal_duck_db"], 0)
+
+        a, b = analysis(20), analysis(20)
+        a["vocal"] = b["vocal"] = [1.] * 80
+        safe = engine.plan_transition(a, b)
+        self.assertEqual(safe["tier"], "safe-crossfade")
+        self.assertEqual(safe["vocal_duck_db"], 0)
+
     def test_equal_power_and_endpoints(self):
         n = 4410
         first = np.tile([1., 0.], (n, 1)).astype(np.float32)

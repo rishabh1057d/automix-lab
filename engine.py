@@ -156,9 +156,23 @@ def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
     return result
 
 
+def _model_vocals(analysis: dict) -> bool:
+    return analysis.get("vocal_source") in ("UMX-HQ ONNX", "test-model")
+
+
+def _covered(analysis: dict, times: np.ndarray) -> np.ndarray:
+    if not _model_vocals(analysis):
+        return np.ones(len(times), dtype=bool)
+    covered = np.zeros(len(times), dtype=bool)
+    for start, end in analysis.get("vocal_windows", []):
+        covered |= (times >= start) & (times <= end)
+    return covered
+
+
 def _activity(analysis: dict, times: np.ndarray) -> np.ndarray:
     values = np.asarray(analysis.get("vocal", [0.0]))
-    return values[np.clip((times * 4).astype(int), 0, len(values) - 1)]
+    activity = values[np.clip((times * 4).astype(int), 0, len(values) - 1)]
+    return np.where(_covered(analysis, times), activity, 0.0)
 
 
 def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: float) -> float:
@@ -167,8 +181,10 @@ def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: fl
                          (_activity(b, cue + times * rate) >= VOCAL_ACTIVE)))
 
 
-def _model_vocals(analysis: dict) -> bool:
-    return analysis.get("vocal_source") in ("UMX-HQ ONNX", "test-model")
+def _model_pair_covered(a: dict, b: dict, start: float, cue: float, duration: float, rate: float) -> bool:
+    times = np.arange(0, max(.25, duration), .25)
+    return (_model_vocals(a) and _model_vocals(b) and
+            bool(_covered(a, start + times).all()) and bool(_covered(b, cue + times * rate).all()))
 
 
 def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
@@ -215,8 +231,11 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             return rise * .6 - voice * .35 - (t - b["audible_start"]) * .015
         starts = [t for t in a.get("downbeats", [])
                   if end - 12 <= t + overlap <= end and t >= overlap] or [end - overlap]
-        if _model_vocals(a) and _model_vocals(b):
-            start, cue = min(((start, cue) for start in starts for cue in incoming),
+        pairs = [(start, cue) for start in starts for cue in incoming]
+        covered_pairs = [pair for pair in pairs
+                         if _model_pair_covered(a, b, pair[0], pair[1], overlap, rate)]
+        if covered_pairs:
+            start, cue = min(covered_pairs,
                              key=lambda pair: (_clash(a, b, pair[0], pair[1], overlap, rate),
                                                -entry_score(pair[1]), -pair[0]))
             reasons.append("Measured downbeat pair selected to minimize model-detected vocal collision.")
@@ -231,20 +250,20 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     overlap = min(overlap, outgoing_span / 3, max(1 / SR, (incoming_end - cue) / 3))
     start = end - overlap
     clash = _clash(a, b, start, cue, overlap, rate)
-    vocal_evidence = ("model" if _model_vocals(a) and _model_vocals(b) else
+    vocal_evidence = ("model" if _model_pair_covered(a, b, start, cue, overlap, rate) else
                       "heuristic" if "heuristic" in (a.get("vocal_source", "") + b.get("vocal_source", "")).lower()
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
         reduced = max(4.0, overlap / 2)
         if reduced < overlap:
-            alternative = _clash(a, b, end - reduced, cue, reduced, rate)
+            alternative = _clash(a, b, start, cue, reduced, rate)
             if alternative < clash:
-                overlap, start, clash = reduced, end - reduced, alternative
+                overlap, end, clash = reduced, start + reduced, alternative
                 reasons.append("Shorter overlap reduces simultaneous model-detected vocals.")
         if clash > .05:
             reasons.append("Unavoidable model-detected vocal overlap; complementary vocal-band ducking applied.")
     vocal_duck_db = (min(6.0, 2.0 + 4.0 * clash)
-                     if not plain and vocal_evidence == "model" and clash > .05 else 0.0)
+                     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05 else 0.0)
     bass = overlap * .7
     nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .4 <= t - start <= overlap * .9]
     if nearby:

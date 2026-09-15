@@ -10,7 +10,7 @@ Executed in the Docker image:
 docker compose run --rm automix python -m unittest discover -s tests -v
 ```
 
-17 tests passed (10 engine, 6 API, 1 vocal-model), final run 2.631 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
+18 tests passed (11 engine, 6 API, 1 vocal-model), final run 2.638 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
 
 | Acceptance criterion | Implementation | Evidence |
 | --- | --- | --- |
@@ -31,7 +31,7 @@ The pinned `vocals.onnx` file was downloaded at 17,820,856 bytes and matched SHA
 
 AutoMix export `0ef54e3042194552a742cd9d8adef103` used UMX-HQ evidence for both tracks. It selected the measured pair at 231.1667 seconds outgoing and 0.02 seconds incoming with a 4.1602-second overlap. Vocal collision was 0%, so the balanced policy correctly reported `vocal_duck_db: 0` rather than applying an unnecessary effect. The cached repeat render produced 21,483,168 finite stereo frames at 44.1 kHz with a -1.0 dBFS sample peak. Browser audition advanced through the handoff with ready state 4 and no media error; the inspector showed `UMX-HQ model` and `Vocal duck not needed`.
 
-Synthetic tests separately force avoidable and unavoidable vocal collisions. They verify clean-cue selection, the 6 dB cap, measurable mid-band attenuation, and that DSP fallback evidence cannot trigger ducking. This is deterministic signal-path evidence, not a claim that the supplied song pair needed ducking.
+Synthetic tests separately force avoidable and unavoidable vocal collisions. They verify clean-cue selection, downbeat-preserving overlap shortening, the 6 dB cap, measurable mid-band attenuation, and that DSP fallback, unmeasured windows, and safe-crossfade tiers cannot claim ducking. This is deterministic signal-path evidence, not a claim that the supplied song pair needed ducking.
 
 ## Real audio measurements
 
