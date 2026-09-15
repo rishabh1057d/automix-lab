@@ -76,6 +76,14 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(shortened["outgoing_start"], 100)
         self.assertEqual(shortened["overlap_seconds"], 4)
 
+        a, b = analysis(120, bpm=60), analysis(120, bpm=60)
+        a.update(content_end=120, downbeats=[100], vocal=[1.] * 480)
+        b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 464)
+        bounded = engine.plan_transition(a, b)
+        self.assertEqual((bounded["outgoing_start"], bounded["outgoing_end"]), (100, 108))
+        self.assertEqual(bounded["overlap_seconds"], 8)
+        self.assertGreater(bounded["vocal_duck_db"], 0)
+
     def test_unmeasured_vocals_are_unknown_and_safe_tier_never_claims_duck(self):
         a, b = analysis(120), analysis(120, cue=40)
         for item in (a, b):

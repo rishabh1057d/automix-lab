@@ -255,7 +255,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
         reduced = max(4.0, overlap / 2)
-        if reduced < overlap:
+        if reduced < overlap and a["content_end"] - (start + reduced) <= 12:
             alternative = _clash(a, b, start, cue, reduced, rate)
             if alternative < clash:
                 overlap, end, clash = reduced, start + reduced, alternative

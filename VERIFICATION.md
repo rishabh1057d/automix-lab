@@ -10,7 +10,7 @@ Executed in the Docker image:
 docker compose run --rm automix python -m unittest discover -s tests -v
 ```
 
-18 tests passed (11 engine, 6 API, 1 vocal-model), final run 2.638 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
+18 tests passed (11 engine, 6 API, 1 vocal-model), final run 3.659 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
 
 | Acceptance criterion | Implementation | Evidence |
 | --- | --- | --- |
