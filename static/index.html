@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#151616">
+  <meta name="description" content="A listening lab for intelligent, beat-aware transitions. Turn a few tracks into one continuous listening experience.">
+  <title>AutoMix Lab — Find the flow</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="AutoMix Lab home"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>automix<span class="brand-lab">lab</span></span></a>
+    <div class="workspace-label">YOUR WORKSPACE</div>
+    <a class="nav-link active" href="#studio"><span class="nav-icon">◉</span> Listening studio <span class="nav-dot"></span></a>
+    <a class="nav-link" href="#queue"><span class="nav-icon">≋</span> Your track queue</a>
+    <a class="nav-link" href="#inside"><span class="nav-icon">⌘</span> Inside the transition</a>
+    <div class="sidebar-bottom">
+      <div class="local-badge"><span></span> RUNS ON YOUR MACHINE</div>
+      <p>Your audio. Your experiment.<br>A little more flow.</p>
+      <div class="version">INDEPENDENT RESEARCH DEMO <span>01</span></div>
+    </div>
+  </aside>
+
+  <main id="studio">
+    <header class="topbar"><div class="breadcrumbs">Workspace <span>/</span> <strong>Listening studio</strong></div><span class="prototype-pill"><span></span> PYTHON AUDIO ENGINE</span></header>
+    <section class="hero">
+      <div class="hero-copy"><div class="eyebrow"><span class="tiny-line"></span> LESS SKIP. MORE FLOW.</div><h1>Good tracks.<br><span>Great chemistry.</span></h1><p>Hear what happens between the songs.<br>Beat-aware transitions, thoughtful cue points,<br>and a mix that keeps you in the moment.</p><div class="hero-actions"><button class="button primary" id="build-demo"><span class="play-small">▶</span> Build demo mix <span class="button-arrow">↗</span></button><button class="button text-button" id="hero-upload">Or bring your own <span>↗</span></button></div><div class="hero-note">3 licensed tracks <span>·</span> Local processing <span>·</span> No account needed</div></div>
+      <div class="hero-art" aria-hidden="true"><div class="art-grid"></div><div class="record record-back"><div class="record-label label-coral">SIDE A<br><b>THE<br>FEELING.</b><span>100 BPM / 01</span></div></div><div class="record record-front"><div class="record-label label-yellow"><span>AM — LAB</span><b>FIND<br>THE FLOW.</b><small>SIDE B / CONTINUOUS</small></div></div><div class="floating-tag"><span class="tag-pulse"></span> MADE TO CONNECT</div><span class="art-coordinate">33° / 45°</span><span class="art-star">✳</span></div>
+    </section>
+
+    <section class="status-panel" id="status-panel" hidden aria-live="polite" aria-atomic="true"><div class="status-top"><div><span class="status-dot"></span><strong id="status-title">Getting everything ready</strong></div><span id="status-percent">0%</span></div><p id="status-message">Preparing your listening session.</p><div class="progress-track"><div id="progress-fill"></div></div><div class="progress-steps"><span data-step="downloading">01 / SOURCE</span><span data-step="analyzing">02 / ANALYZE</span><span data-step="planning">03 / CONNECT</span><span data-step="rendering">04 / RENDER</span></div></section>
+    <div class="error-banner" id="error-banner" role="alert" hidden></div>
+
+    <section class="session-section" aria-labelledby="session-title">
+      <div class="section-heading"><div><div class="eyebrow muted">THE LISTENING SESSION</div><h2 id="session-title">One queue. Two ways to hear it.</h2></div><div class="mode-switch" role="group" aria-label="Listening mode"><button class="selected" id="mode-automix" aria-pressed="true">✦ AutoMix</button><button id="mode-plain" aria-pressed="false">Plain crossfade</button></div></div>
+      <div class="player-card">
+        <div class="player-top"><div class="player-identity"><div class="mini-art"><span>AM</span></div><div><div class="small-caps" id="player-kicker">YOUR CONTINUOUS MIX</div><h3 id="player-title">A better in-between.</h3><p id="player-subtitle">Build the demo to hear the difference.</p></div></div><div class="live-pill" id="mix-state">AWAITING AUDIO</div></div>
+        <div class="waveform-wrap" id="waveform-wrap"><canvas id="mix-waveform" aria-label="Audio waveform and transition locations"></canvas><div class="waveform-empty" id="waveform-empty"><span class="empty-wave">▂ ▅ ▃ ▇ ▄ ▆ ▂ ▅ ▃</span><span>Your sound takes shape here</span></div><div class="waveform-playhead" id="playhead" hidden></div><div class="transition-labels" id="transition-labels"></div></div>
+        <label class="sr-only" for="seek">Seek through mix</label><input id="seek" class="seek-slider" type="range" min="0" max="1" step="0.1" value="0" disabled>
+        <div class="transport"><div class="transport-buttons"><button class="icon-button" id="restart" aria-label="Restart mix" disabled>↤</button><button class="play-button" id="play" aria-label="Play mix" disabled><span id="play-symbol">▶</span></button><button class="icon-button" id="next-transition" aria-label="Jump to next transition" disabled>⇥</button><span class="time"><span id="current-time">0:00</span><span> / </span><span id="duration">0:00</span></span></div><div class="transport-right"><span class="audio-spec" id="audio-spec">STEREO / LOCAL</span><label class="volume-control"><span aria-hidden="true">◖))</span><span class="sr-only">Volume</span><input id="volume" type="range" min="0" max="1" step="0.01" value="0.8"></label></div></div>
+      </div>
+      <div class="audition-row"><span>SHORT ON TIME?</span><div id="audition-buttons"><button disabled>↗ Hear transition 01</button><button disabled>↗ Hear transition 02</button></div><span class="audition-hint">Jump straight to the good part.</span></div>
+    </section>
+
+    <div class="workspace-grid">
+      <section class="queue-section" id="queue"><div class="section-heading"><div><div class="eyebrow muted">THE INGREDIENTS</div><h2>Your track queue <span id="queue-count">03</span></h2></div><button class="small-button" id="queue-upload">＋ Add audio</button></div><div id="track-list" class="track-list"><div class="loading-tracks">Loading your demo playlist…</div></div><div class="upload-zone" id="upload-zone"><span class="upload-icon">↥</span><div><strong>Make it your own.</strong><p>Drop 2–6 audio files, or <button id="browse-files">browse files</button><br><span>MP3, WAV, FLAC · audio you have permission to use</span></p></div></div><input id="file-input" type="file" accept=".mp3,.wav,.flac" multiple hidden><div class="queue-actions" id="queue-actions" hidden><button class="button primary compact" id="build-upload">Build my mix ↗</button><button class="button text-button" id="reset-demo">Use demo tracks</button></div><p class="queue-footnote">Sequence is intentional. AutoMix finds the handoff; it doesn't choose the next song.</p></section>
+
+      <section class="inspector" id="inside"><div class="section-heading"><div><div class="eyebrow muted">INSIDE THE TRANSITION</div><h2>A little method to the mix.</h2></div></div><div class="inspector-card"><div class="inspector-top"><span class="small-caps">TRANSITION <select id="transition-select" aria-label="Inspect transition" disabled><option value="0">01 → 02</option></select></span><span class="tier-pill" id="tier">WAITING FOR ANALYSIS</span></div><div class="deck" id="deck-out"><div class="deck-label"><span><i class="deck-dot coral"></i> OUTGOING</span><strong id="out-title">Current track</strong></div><canvas id="out-wave" aria-label="Outgoing track waveform"></canvas><div class="gain-track"><span id="out-gain"></span></div></div><div class="handoff-rule"><span></span><b>↓ THE HANDOFF ↓</b><span></span></div><div class="deck" id="deck-in"><div class="deck-label"><span><i class="deck-dot teal"></i> INCOMING</span><strong id="in-title">Next track</strong></div><canvas id="in-wave" aria-label="Incoming track waveform"></canvas><div class="gain-track"><span id="in-gain"></span></div></div><div class="metrics"><div><span>START AT</span><strong id="cue-value">—</strong></div><div><span>OVERLAP</span><strong id="overlap-value">—</strong></div><div><span>TEMPO</span><strong id="tempo-value">—</strong></div></div><div class="explanation"><span>✦</span><p id="transition-explanation">We look for a musical entry point, align the handoff, and let one track make room for the next.</p></div><div class="inspector-detail" id="inspector-detail">Beat analysis · equal-power fades · bass handoff</div></div></section>
+    </div>
+
+    <section class="bottom-grid"><div class="export-card"><div class="export-icon">↗</div><div><h3>Take the session with you.</h3><p>Export the audio. Inspect the decisions.</p></div><div class="export-actions"><a class="small-button disabled" id="export-audio" aria-disabled="true">↓ WAV</a><a class="small-button disabled" id="export-plan" aria-disabled="true">↓ Mix plan</a></div></div><div class="spotify-card"><span class="spotify-symbol" aria-hidden="true">≋</span><div><h3>Spotify, in context.</h3><p id="spotify-message">Optional now-playing metadata. Mixing uses your local audio.</p></div><button class="small-button" id="spotify-connect">Details ↗</button></div></section>
+    <footer><span><b>automixlab</b> <span class="footer-divider">/</span> An independent audio experiment.</span><div><button id="show-credits">Music & credits ↗</button><a href="https://github.com/kushagrasinghx/BitChord" target="_blank" rel="noreferrer">Inspired by BitChord ↗</a></div></footer>
+  </main>
+</div>
+<audio id="audio" preload="metadata"></audio>
+<dialog id="info-dialog"><button class="dialog-close icon-button" id="dialog-close" aria-label="Close dialog">×</button><div class="eyebrow muted">THE DETAILS</div><h2 id="dialog-title">Music & credits</h2><div id="dialog-body"></div></dialog>
+<script src="/static/app.js" defer></script>
+</body>
+</html>

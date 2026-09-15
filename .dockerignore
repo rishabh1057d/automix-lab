@@ -1,0 +1,5 @@
+.git
+.okdev
+data
+__pycache__
+.env

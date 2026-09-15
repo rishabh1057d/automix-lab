@@ -1,0 +1,38 @@
+[
+  {
+    "id": "style-funk",
+    "title": "Style Funk",
+    "artist": "Kevin MacLeod",
+    "filename": "StyleFunk.mp3",
+    "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/StyleFunk.mp3",
+    "sha256": "5036f27114e79c63d0fddf0c98562cce481b3e36d4de869bc3611b9ef90e4748",
+    "duration": 307,
+    "bpm": 100,
+    "license": "CC BY 4.0",
+    "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100058"
+  },
+  {
+    "id": "leopard-print-elevator",
+    "title": "Leopard Print Elevator",
+    "artist": "Kevin MacLeod",
+    "filename": "Leopard Print Elevator.mp3",
+    "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Leopard%20Print%20Elevator.mp3",
+    "sha256": "b1e8213c81267e822083ed0388ab236151dd9b0839916a15082f5bd63e852691",
+    "duration": 328,
+    "bpm": 100,
+    "license": "CC BY 4.0",
+    "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1500077"
+  },
+  {
+    "id": "lasting-hope",
+    "title": "Lasting Hope",
+    "artist": "Kevin MacLeod",
+    "filename": "Lasting Hope.mp3",
+    "url": "https://incompetech.com/music/royalty-free/mp3-royaltyfree/Lasting%20Hope.mp3",
+    "sha256": "baf3af8010570060927286de4e0b969c25f34e3444574812d36eedc57eb0f862",
+    "duration": 143,
+    "bpm": 100,
+    "license": "CC BY 4.0",
+    "source_url": "https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100178"
+  }
+]
