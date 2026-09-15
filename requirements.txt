@@ -7,3 +7,4 @@ soundfile==0.13.1
 audiotsm==0.1.2
 beat-this==1.1.0
 httpx==0.28.1
+onnxruntime==1.30.0

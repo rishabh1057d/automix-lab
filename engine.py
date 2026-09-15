@@ -14,7 +14,8 @@ import soundfile as sf
 from scipy import signal
 
 SR = 44100
-VERSION = "analysis-3-small0"
+VERSION = "analysis-4-umxhq-3d05709f"
+VOCAL_ACTIVE = .35
 
 
 def decode(path: Path) -> np.ndarray:
@@ -99,7 +100,7 @@ def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
     audio = decode(path)
     duration = len(audio) / SR
     hop = SR // 4
-    energy, vocal = [], []
+    energy, heuristic = [], []
     frequencies = np.fft.rfftfreq(hop, 1 / SR)
     voice_band = (frequencies >= 250) & (frequencies <= 4000)
     previous = 0.0
@@ -114,7 +115,7 @@ def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
         flatness = float(np.exp(np.log(band).mean()) / band.mean())
         centered = float(np.mean(center ** 2) / (np.mean(frame ** 2) + 1e-12))
         percussive = max(0.0, (rms - previous) / (rms + 1e-8))
-        vocal.append(float(np.clip(band_fraction * centered * (1 - flatness) * (1 - .7 * percussive), 0, 1)))
+        heuristic.append(float(np.clip(band_fraction * centered * (1 - flatness) * (1 - .7 * percussive), 0, 1)))
         previous = rms
     reference = float(np.quantile(energy, .85))
     active = np.flatnonzero(np.asarray(energy) > max(1e-5, reference * .1))
@@ -128,12 +129,27 @@ def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
         logging.getLogger(__name__).exception("Beat This! inference unavailable for %s", path.name)
         beat = {"beats": [], "downbeats": [], "bpm": 0.0, "beat_confidence": 0.0,
                 "beat_source": "unavailable", "beat_warning": f"Beat model unavailable ({type(exc).__name__}); safe crossfade used."}
+    vocal_cacheable = True
+    if reference > 1e-5:
+        try:
+            from vocal_model import activity_curve
+            vocal, vocal_windows, vocal_source, vocal_warning = activity_curve(
+                audio, cache_dir.parent / "models" / "umx-hq", len(energy), progress)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("UMX-HQ inference unavailable for %s", path.name)
+            vocal, vocal_windows = heuristic, []
+            vocal_source = "DSP heuristic fallback"
+            vocal_warning = f"Vocal model unavailable ({type(exc).__name__}); heuristic affects cue ranking only."
+            vocal_cacheable = False
+    else:
+        vocal, vocal_windows = [0.0] * len(energy), []
+        vocal_source, vocal_warning = "unavailable", "Silent audio: vocal analysis skipped."
     result = dict(beat, duration=duration, audible_start=audible_start, content_end=content_end,
                   energy=[round(x, 6) for x in energy], vocal=[round(x, 4) for x in vocal],
-                  vocal_source="DSP heuristic; instruments can resemble voices; not singer-onset detection",
+                  vocal_source=vocal_source, vocal_windows=vocal_windows, vocal_warning=vocal_warning,
                   waveform=peaks(audio), sha256=digest, cache_hit=False)
     # Failed model downloads are retryable; do not turn one outage into a permanent cached fallback.
-    if beat["beat_source"] != "unavailable" or duration < 8 or reference <= 1e-5:
+    if (beat["beat_source"] != "unavailable" or duration < 8 or reference <= 1e-5) and vocal_cacheable:
         temporary = cached.with_suffix(".tmp")
         temporary.write_text(json.dumps(result, allow_nan=False), encoding="utf-8")
         temporary.replace(cached)
@@ -147,8 +163,12 @@ def _activity(analysis: dict, times: np.ndarray) -> np.ndarray:
 
 def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: float) -> float:
     times = np.arange(0, max(.25, duration), .25)
-    return float(np.mean((_activity(a, start + times) >= .6) &
-                         (_activity(b, cue + times * rate) >= .6)))
+    return float(np.mean((_activity(a, start + times) >= VOCAL_ACTIVE) &
+                         (_activity(b, cue + times * rate) >= VOCAL_ACTIVE)))
+
+
+def _model_vocals(analysis: dict) -> bool:
+    return analysis.get("vocal_source") in ("UMX-HQ ONNX", "test-model")
 
 
 def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
@@ -175,13 +195,16 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     for item in (a, b):
         if item.get("beat_warning"):
             reasons.append(item["beat_warning"])
+        if item.get("vocal_warning"):
+            reasons.append(item["vocal_warning"])
     overlap = 6.0 if plain or tier == "safe-crossfade" else float(np.clip(8 * 60 / bpm_a, 4, 12))
     overlap = min(overlap, a["duration"] / 3, b["duration"] / 3)
     end = a["duration"] if plain else a["content_end"]
     cue = 0.0 if plain else b["audible_start"]
     if tier in ("beatmatched", "dj-assisted"):
         incoming = [t for t in b.get("downbeats", [])
-                    if b["audible_start"] <= t <= min(b["audible_start"] + 12, b["duration"] - overlap * rate - 3)]
+                    if b["audible_start"] <= t <= min(b["audible_start"] + 12,
+                                                       b["duration"] - overlap * rate - 3)] or [cue]
         curve = np.asarray(b.get("energy", [0.0]))
         def entry_score(t):
             at = min(len(curve) - 1, round(t * 4))
@@ -190,29 +213,38 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             rise = (after - before) / (max(after, before) + 1e-8)
             voice = float(_activity(b, np.arange(t, t + overlap, .25)).mean())
             return rise * .6 - voice * .35 - (t - b["audible_start"]) * .015
-        if incoming:
-            cue = max(incoming, key=entry_score)
-            reasons.append("Incoming downbeat selected by energy rise, instrumental runway, and ≤12-second intro budget.")
-        # Anchor the start of the overlap to a measured outgoing downbeat.
-        starts = [t for t in a.get("downbeats", []) if end - 12 <= t + overlap <= end and t >= overlap]
-        if starts:
-            start = max(starts)
-            end = start + overlap
+        starts = [t for t in a.get("downbeats", [])
+                  if end - 12 <= t + overlap <= end and t >= overlap] or [end - overlap]
+        if _model_vocals(a) and _model_vocals(b):
+            start, cue = min(((start, cue) for start in starts for cue in incoming),
+                             key=lambda pair: (_clash(a, b, pair[0], pair[1], overlap, rate),
+                                               -entry_score(pair[1]), -pair[0]))
+            reasons.append("Measured downbeat pair selected to minimize model-detected vocal collision.")
+        else:
+            start, cue = max(starts), max(incoming, key=entry_score)
+            reasons.append("Incoming downbeat selected by energy rise, vocal estimate, and ≤12-second intro budget.")
+        end = start + overlap
+        if start in a.get("downbeats", []):
             reasons.append("Outgoing overlap begins on a measured downbeat near the audible ending.")
     outgoing_span = end if plain else max(1 / SR, end - a["audible_start"])
     incoming_end = b["duration"] if plain else b["content_end"]
     overlap = min(overlap, outgoing_span / 3, max(1 / SR, (incoming_end - cue) / 3))
     start = end - overlap
     clash = _clash(a, b, start, cue, overlap, rate)
-    if not plain and tier != "safe-crossfade" and clash > .05:
+    vocal_evidence = ("model" if _model_vocals(a) and _model_vocals(b) else
+                      "heuristic" if "heuristic" in (a.get("vocal_source", "") + b.get("vocal_source", "")).lower()
+                      else "unavailable")
+    if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
         reduced = max(4.0, overlap / 2)
-        if reduced < overlap and a["content_end"] - (start + reduced) <= 12:
-            alternative = _clash(a, b, start, cue, reduced, rate)
+        if reduced < overlap:
+            alternative = _clash(a, b, end - reduced, cue, reduced, rate)
             if alternative < clash:
-                overlap, end, clash = reduced, start + reduced, alternative
-                reasons.append("Shorter overlap reduces simultaneous voice-like activity.")
+                overlap, start, clash = reduced, end - reduced, alternative
+                reasons.append("Shorter overlap reduces simultaneous model-detected vocals.")
         if clash > .05:
-            reasons.append("Voice-like overlap detected by heuristic; complementary mid-band attenuation applied.")
+            reasons.append("Unavoidable model-detected vocal overlap; complementary vocal-band ducking applied.")
+    vocal_duck_db = (min(6.0, 2.0 + 4.0 * clash)
+                     if not plain and vocal_evidence == "model" and clash > .05 else 0.0)
     bass = overlap * .7
     nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .4 <= t - start <= overlap * .9]
     if nearby:
@@ -220,6 +252,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     return {"tier": tier, "outgoing_start": start, "outgoing_end": end, "incoming_cue": cue,
             "overlap_seconds": overlap, "overlap_beats": overlap * bpm_a / 60 if bpm_a else 0,
             "incoming_playback_rate": rate, "bass_handoff_seconds": bass, "vocal_overlap": clash,
+            "vocal_duck_db": round(vocal_duck_db, 2), "vocal_evidence": vocal_evidence,
             "confidence": min(ca, cb), "reasons": reasons}
 
 
@@ -291,12 +324,13 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
         # Smooth bass exchange while preserving the exact full-band signal at both endpoints.
         outgoing = outgoing - a_low * bass_gain
         incoming = incoming - b_low * (1 - bass_gain)
-        if plan["vocal_overlap"] > .05:
+        if plan.get("vocal_duck_db", 0) > 0:
             middle = signal.butter(2, [250, 4000], btype="bandpass", fs=SR, output="sos")
             a_mid = signal.sosfilt(middle, outgoing, axis=0).astype(np.float32)
             b_mid = signal.sosfilt(middle, incoming, axis=0).astype(np.float32)
-            outgoing -= a_mid * (.45 * np.sin(np.pi * x) * x)
-            incoming -= b_mid * (.45 * np.sin(np.pi * x) * (1 - x))
+            depth = 1 - 10 ** (-plan["vocal_duck_db"] / 20)
+            outgoing -= a_mid * (depth * np.sin(np.pi * x) * x)
+            incoming -= b_mid * (depth * np.sin(np.pi * x) * (1 - x))
     return outgoing * np.cos(x * np.pi / 2) + incoming * np.sin(x * np.pi / 2)
 
 

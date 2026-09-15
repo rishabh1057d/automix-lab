@@ -275,7 +275,9 @@ function renderInspector() {
   const confidence = Math.round((Number(transition.confidence) || 0) * 100);
   const vocal = Math.round((Number(transition.vocal_overlap) || 0) * 100);
   const bassApplied = /beatmatched|dj.assisted/i.test(transition.tier);
-  $("inspector-detail").textContent = `Confidence ${confidence}% · Vocal overlap estimate ${vocal}% (heuristic) · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
+  const vocalEvidence = transition.vocal_evidence === "model" ? "UMX-HQ model" : transition.vocal_evidence || "unavailable";
+  const duck = Number(transition.vocal_duck_db) || 0;
+  $("inspector-detail").textContent = `Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
   drawAll();
 }
 
@@ -356,7 +358,7 @@ $("waveform-wrap").onclick = event => { if (!active()) return; const rect = $("w
 $("transition-select").onchange = event => { state.transition = Number(event.target.value); renderInspector(); updatePlayback(); };
 $("dialog-close").onclick = () => $("info-dialog").close();
 $("info-dialog").onclick = event => { if (event.target === $("info-dialog")) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close(); } };
-$("show-credits").onclick = () => showDialog("Good music. Proper credit.", `<p>The demo playlist uses music with permission under Creative Commons. Source recordings remain the work of their original artists.</p>${state.tracks.map(track => `<div class="credit-row"><strong>${escapeHTML(track.title)}</strong><br>${escapeHTML(track.artist || "Kevin MacLeod")} · ${escapeHTML(track.license || "CC BY 4.0")}<br><a href="${escapeHTML(track.source_url || "https://incompetech.com/music/royalty-free/")}" target="_blank" rel="noreferrer">Original track & license ↗</a></div>`).join("")}<p>An original implementation inspired by BitChord's transition concepts. Vocal likelihood is a signal-processing estimate, not a singing detector. Spotify already offers mixing features; this independent research demo explores a transparent, local implementation and is not affiliated with Spotify.</p>`);
+$("show-credits").onclick = () => showDialog("Good music. Proper credit.", `<p>The demo playlist uses music with permission under Creative Commons. Source recordings remain the work of their original artists.</p>${state.tracks.map(track => `<div class="credit-row"><strong>${escapeHTML(track.title)}</strong><br>${escapeHTML(track.artist || "Kevin MacLeod")} · ${escapeHTML(track.license || "CC BY 4.0")}<br><a href="${escapeHTML(track.source_url || "https://incompetech.com/music/royalty-free/")}" target="_blank" rel="noreferrer">Original track & license ↗</a></div>`).join("")}<p>An original implementation inspired by BitChord's transition concepts. Vocal activity uses the UMX-HQ source-separation model when available and an explicitly labelled DSP fallback otherwise. Spotify already offers mixing features; this independent research demo is not affiliated with Spotify.</p>`);
 $("spotify-connect").onclick = async () => {
   if (state.spotifyConnected) {
     try { await refreshSpotify(); } catch (error) { showError(error); }

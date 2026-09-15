@@ -10,7 +10,7 @@ Install/start Docker Desktop, then run in this directory:
 docker compose up --build
 ```
 
-Open **http://127.0.0.1:8765**. The first build downloads CPU PyTorch and dependencies. No GPU, Python installation, Spotify subscription, or account is needed for the demo.
+Open **http://127.0.0.1:8765**. The first analysis downloads pinned Beat This! and UMX-HQ model weights. No GPU, Python installation, Spotify subscription, or account is needed for the demo.
 
 1. Click **Build demo mix**. The app downloads three tracks from Kevin MacLeod's official catalog, checks their SHA-256 hashes, analyzes them and renders AutoMix plus a plain reference.
 2. Click **Hear transition 01** or **02** to start four seconds before a handoff.
@@ -18,15 +18,15 @@ Open **http://127.0.0.1:8765**. The first build downloads CPU PyTorch and depend
 4. Inspect the incoming cue, overlap, tempo adjustment, waveform and reasoning below the player. Use **WAV** or **Mix plan** to export.
 5. Use **Add audio** for 2–6 MP3/WAV/FLAC files in filename-selection order. Each file must be mono/stereo, 2 seconds–10 minutes, at most 100 MB, and sampled between 8 and 192 kHz.
 
-The server binds only to loopback. Audio and model weights stay in `data/`, excluded from Git. Once the demo and model are cached, ordinary mixing works offline. Failed model downloads produce an explicit safe fallback and are retried on a later build. Rendered sessions survive restarts. A partially rendered job is marked interrupted on restart; rebuild it using the same files.
+The server binds only to loopback. Audio and model weights stay in `data/`, excluded from Git. Once the demo and models are cached, ordinary mixing works offline. Failed model downloads produce an explicitly labelled fallback and are retried on a later build. Rendered sessions survive restarts. A partially rendered job is marked interrupted on restart; rebuild it using the same files.
 
 Stop with `docker compose stop`. Uploaded sources and exports accumulate in `data/`; this is a local workbench with manual retention.
 
 ## What it does
 
-The engine measures a 250 ms energy envelope, audible boundaries and an approximate voice-like activity curve. Beat This! small0 measures beats/downbeats in the head and tail. It does not invent a beat grid for the unmeasured middle.
+The engine measures a 250 ms energy envelope and audible boundaries. Beat This! small0 measures beats/downbeats, while UMX-HQ estimates vocal activity from source-separated magnitude in each track's first and last 30 seconds. Unmeasured middle sections stay explicitly neutral; neither model invents evidence there.
 
-The planner ranks entry downbeats by energy rise, voice-like activity and a 12-second audible-intro budget. It aligns the outgoing fade near the audible ending. Both confident grids and an octave-normalized tempo difference within 4% permit beatmatching. Otherwise it chooses DJ-assisted or safe crossfade.
+The planner evaluates incoming and outgoing downbeat pairs within a 12-second transition budget and prefers the pair with the least model-detected vocal collision. If vocals remain unavoidable, it can shorten the overlap and apply at most 6 dB of complementary vocal-band ducking. Model failure falls back to the old heuristic for cue ranking only; fallback evidence cannot trigger ducking or overlap shortening. Both confident beat grids and an octave-normalized tempo difference within 4% permit beatmatching.
 
 The renderer processes two tracks simultaneously during each overlap, using pitch-preserving WSOLA on the incoming region, a return to native tempo, equal-power volume curves, complementary filter sweeps and a bass handoff. Completed WAVs have a -1 dBFS sample-peak ceiling. Ordinary playback outside transition windows uses the original decoded samples, subject to one global output gain.
 
@@ -60,7 +60,7 @@ Tests cover audio boundaries, confidence fallbacks, cue budgets, pitch preservat
 ## Scope and limits
 
 - Queue order is supplied by you; there is no recommendation engine.
-- Voice-like activity is a **DSP heuristic**, not source separation or reliable singer-onset detection. Centered melodic instruments can trigger it.
+- UMX-HQ supplies source-separation evidence, not a calibrated singing probability or lyric-onset transcript. Separation can still leak instruments or miss quiet vocals; the UI labels model, heuristic, and unavailable evidence.
 - A beat grid can still be wrong despite high confidence, especially with tempo changes or weak percussion. The head/tail model is tuned for this small demonstration.
 - The current planner aligns downbeats and local energy changes; it does not infer full musical phrases or harmonic key.
 - WSOLA is suitable for small corrections but can still produce artifacts. Listen to the output before making quality claims.

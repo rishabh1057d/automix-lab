@@ -17,7 +17,8 @@ def analysis(duration=60, bpm=120, confidence=.9, cue=0):
             "downbeats": np.arange(cue, duration, 240 / bpm).tolist() if bpm else [],
             "audible_start": cue, "content_end": duration, "energy": [.1] * int(duration * 4),
             "vocal": [0.] * int(duration * 4), "waveform": [.1], "cache_hit": False,
-            "beat_source": "test", "beat_warning": None}
+            "beat_source": "test", "beat_warning": None, "vocal_source": "test-model",
+            "vocal_windows": [[0, duration]], "vocal_warning": None}
 
 
 class EngineTests(unittest.TestCase):
@@ -49,6 +50,25 @@ class EngineTests(unittest.TestCase):
         self.assertAlmostEqual(engine._clash(a, b, 0, 0, 4, 1), .25)
         self.assertEqual(engine._clash(a, b, 1, 0, 4, 1), 0)
 
+    def test_model_vocals_choose_clean_cue_and_gate_ducking(self):
+        a, b = analysis(), analysis()
+        a["vocal"] = [1.] * len(a["vocal"])
+        b["vocal"][0:8] = [1.] * 8
+        clean = engine.plan_transition(a, b)
+        self.assertGreaterEqual(clean["incoming_cue"], 2)
+        self.assertEqual(clean["vocal_overlap"], 0)
+        self.assertEqual(clean["vocal_duck_db"], 0)
+
+        a, b = analysis(bpm=60), analysis(bpm=60)
+        a["vocal"] = b["vocal"] = [1.] * len(a["vocal"])
+        unavoidable = engine.plan_transition(a, b)
+        self.assertEqual(unavoidable["vocal_evidence"], "model")
+        self.assertEqual(unavoidable["vocal_duck_db"], 6)
+        a["vocal_source"] = b["vocal_source"] = "DSP heuristic fallback"
+        fallback = engine.plan_transition(a, b)
+        self.assertEqual(fallback["vocal_evidence"], "heuristic")
+        self.assertEqual(fallback["vocal_duck_db"], 0)
+
     def test_equal_power_and_endpoints(self):
         n = 4410
         first = np.tile([1., 0.], (n, 1)).astype(np.float32)
@@ -58,21 +78,42 @@ class EngineTests(unittest.TestCase):
         np.testing.assert_allclose(audio[0], first[0], atol=1e-7)
         np.testing.assert_allclose(audio[-1], second[-1], atol=1e-7)
 
+    def test_vocal_duck_is_audible_signal_processing(self):
+        t = np.arange(4410) / engine.SR
+        tone = np.column_stack((np.sin(2 * np.pi * 1000 * t),) * 2).astype(np.float32) * .2
+        plan = {"tier": "dj-assisted", "bass_handoff_seconds": .05,
+                "overlap_seconds": .1, "vocal_duck_db": 0}
+        plain = engine.blend_audio(tone, tone, plan)
+        ducked = engine.blend_audio(tone, tone, dict(plan, vocal_duck_db=6))
+        middle = slice(1800, 2600)
+        self.assertLess(float(np.sqrt(np.mean(ducked[middle] ** 2))),
+                        float(np.sqrt(np.mean(plain[middle] ** 2))) * .85)
+
     def test_decode_silence_boundaries_and_cache(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             path = root / "test.wav"
             audio = np.concatenate((np.zeros(engine.SR), np.full(engine.SR * 2, .1), np.zeros(engine.SR)))
             sf.write(path, audio, engine.SR)
-            with patch.object(engine, "_beats", side_effect=AssertionError("No inference for short tracks")):
+            fake_vocals = lambda audio, model_dir, points, progress: ([0.] * points, [[0, 4]], "test-model", None)
+            with patch.object(engine, "_beats", side_effect=AssertionError("No inference for short tracks")), \
+                    patch("vocal_model.activity_curve", side_effect=fake_vocals):
                 first = engine.analyze(path, root / "cache")
                 second = engine.analyze(path, root / "cache")
             self.assertEqual(first["audible_start"], 1)
             self.assertEqual(first["content_end"], 3)
             self.assertTrue(second["cache_hit"])
+            retry_cache = root / "retry-cache"
+            with patch("vocal_model.activity_curve", side_effect=RuntimeError("offline")):
+                fallback = engine.analyze(path, retry_cache)
+            with patch("vocal_model.activity_curve", side_effect=fake_vocals):
+                recovered = engine.analyze(path, retry_cache)
+            self.assertEqual(fallback["vocal_source"], "DSP heuristic fallback")
+            self.assertFalse(recovered["cache_hit"])
             sf.write(path, np.zeros(engine.SR), engine.SR)
             silent = engine.analyze(path, root / "cache")
             self.assertEqual(silent["beat_confidence"], 0)
+            self.assertTrue(engine.analyze(path, root / "cache")["cache_hit"])
             sf.write(path, np.zeros((10, 3)), engine.SR)
             with self.assertRaises(ValueError):
                 engine.decode(path)
