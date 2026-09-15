@@ -16,7 +16,7 @@ Open **http://127.0.0.1:8765**. The first build downloads CPU PyTorch and depend
 2. Click **Hear transition 01** or **02** to start four seconds before a handoff.
 3. Switch **AutoMix / Plain crossfade** to compare the corresponding transition.
 4. Inspect the incoming cue, overlap, tempo adjustment, waveform and reasoning below the player. Use **WAV** or **Mix plan** to export.
-5. Use **Add audio** for 2–6 MP3/WAV/FLAC files in filename-selection order. Each file must be mono/stereo, 2 seconds–10 minutes, at most 50 MB, and sampled between 8 and 192 kHz.
+5. Use **Add audio** for 2–6 MP3/WAV/FLAC files in filename-selection order. Each file must be mono/stereo, 2 seconds–10 minutes, at most 100 MB, and sampled between 8 and 192 kHz.
 
 The server binds only to loopback. Audio and model weights stay in `data/`, excluded from Git. Once the demo and model are cached, ordinary mixing works offline. Failed model downloads produce an explicit safe fallback and are retried on a later build. Rendered sessions survive restarts. A partially rendered job is marked interrupted on restart; rebuild it using the same files.
 

@@ -29,6 +29,7 @@ class EngineTests(unittest.TestCase):
             self.assertGreaterEqual(plan["overlap_seconds"], 4)
             self.assertLessEqual(plan["overlap_seconds"], 12)
         self.assertEqual(engine.plan_transition(analysis(confidence=.1), analysis(confidence=.1))["tier"], "safe-crossfade")
+        self.assertEqual(engine.plan_transition(analysis(confidence=.19), analysis(confidence=.19))["tier"], "dj-assisted")
         self.assertEqual(engine.plan_transition(analysis(duration=5), analysis())["tier"], "safe-crossfade")
 
     def test_cue_budget_and_plain_beginning(self):

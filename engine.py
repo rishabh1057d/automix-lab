@@ -159,10 +159,11 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     ratios = [bpm_a / (bpm_b * factor) for factor in (.5, 1, 2)] if bpm_a and bpm_b else [1.0]
     ratio = min(ratios, key=lambda value: abs(value - 1))
     reasons = []
+    has_structural_cues = bool(a.get("downbeats") and b.get("downbeats"))
     if plain:
         tier, rate = "plain-crossfade", 1.0
         reasons.append("A/B reference: six-second equal-power fade, full track beginnings.")
-    elif short or not (40 <= bpm_a <= 220 and 40 <= bpm_b <= 220) or max(ca, cb) < .2:
+    elif short or not (40 <= bpm_a <= 220 and 40 <= bpm_b <= 220) or max(ca, cb) < .15 or not has_structural_cues:
         tier, rate = "safe-crossfade", 1.0
         reasons.append("Short track or insufficient measured beat evidence: conservative crossfade.")
     elif min(ca, cb) >= .55 and abs(ratio - 1) <= .04000001:

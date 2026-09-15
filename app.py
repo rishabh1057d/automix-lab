@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR", ROOT / "data"))
 MANIFEST = json.loads((ROOT / "demo_tracks.json").read_text())
-MAX_FILE = 50 * 1024 * 1024
+MAX_FILE = 100 * 1024 * 1024
 MAX_BODY = 6 * MAX_FILE + 1024 * 1024
 WORKER = ThreadPoolExecutor(max_workers=1)
 LOCK = threading.Lock()
@@ -119,7 +119,7 @@ class LocalBoundary:
             if int(headers.get(b"content-length", b"0")) > MAX_BODY:
                 raise BodyTooLarge()
         except (ValueError, BodyTooLarge):
-            return await JSONResponse({"detail": "Upload exceeds the 300 MB total limit."}, 413)(scope, receive, send)
+            return await JSONResponse({"detail": "Upload exceeds the 600 MB total limit."}, 413)(scope, receive, send)
         size = 0
 
         async def limited_receive():
@@ -133,7 +133,7 @@ class LocalBoundary:
         try:
             await self.app(scope, limited_receive, send)
         except BodyTooLarge:
-            await JSONResponse({"detail": "Upload exceeds the 300 MB total limit."}, 413)(scope, receive, send)
+            await JSONResponse({"detail": "Upload exceeds the 600 MB total limit."}, 413)(scope, receive, send)
 
 
 app.add_middleware(LocalBoundary)
@@ -287,7 +287,7 @@ async def create_mix(request: Request):
                         while chunk := await upload.read(1024 * 1024):
                             size += len(chunk)
                             if size > MAX_FILE:
-                                raise HTTPException(413, "Each file must be 50 MB or smaller.")
+                                raise HTTPException(413, "Each file must be 100 MB or smaller.")
                             digest.update(chunk)
                             handle.write(chunk)
                     await asyncio.to_thread(validate_audio, temp)

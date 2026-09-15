@@ -124,7 +124,7 @@ function chooseFiles(files) {
   const selected = Array.from(files);
   if (selected.length < 2 || selected.length > 6) return showError("Select 2–6 files together. The selection becomes your complete, ordered queue.");
   if (selected.some(file => !/\.(mp3|wav|flac)$/i.test(file.name))) return showError("Please use MP3, WAV, or FLAC audio files.");
-  if (selected.some(file => file.size > 50 * 1024 * 1024)) return showError("Each audio file must be 50 MB or smaller.");
+  if (selected.some(file => file.size > 100 * 1024 * 1024)) return showError("Each audio file must be 100 MB or smaller.");
   state.files = selected;
   audio.pause();
   state.results = { automix: null, plain: null };
