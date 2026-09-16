@@ -429,7 +429,7 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
         entry = np.clip(2 * x - 1, 0, 1)
         in_wet = 1 - entry
         outgoing = outgoing * (1 - out_wet) + _filter_sweep(outgoing, [5000, 2000, 700, 250], "lowpass") * out_wet
-        incoming = incoming * (1 - in_wet) + _filter_sweep(incoming, [250, 500, 1600, 18000], "lowpass") * in_wet
+        incoming = incoming * (1 - in_wet) + _filter_sweep(incoming, [250, 1000, 1800, 18000], "lowpass") * in_wet
     if plan["tier"] in ("beatmatched", "dj-assisted"):
         low = signal.butter(2, 200, fs=SR, output="sos")
         a_low = signal.sosfilt(low, outgoing, axis=0).astype(np.float32)
