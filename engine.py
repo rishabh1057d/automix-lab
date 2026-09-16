@@ -304,8 +304,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
         if not starts:
             outro, overlap, end = None, float(np.clip(8 * 60 / bpm_a, 4, 12)), a["content_end"]
             starts = [t for t in a.get("downbeats", []) if end - 12 <= t + overlap <= end
-                      and t >= overlap and _audible_seconds(a.get("energy", []), t + overlap, end)
-                      <= MAX_DISCARDED_MUSIC_SECONDS]
+                      and t >= overlap and _safe_outro_exit(a, t + overlap)]
         starts = starts or [end - overlap]
         pairs = [(start, cue) for start in starts for cue in incoming]
         covered_pairs = [pair for pair in pairs
@@ -338,10 +337,8 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
         reduced = max(4.0, overlap / 2)
-        if (reduced < overlap and (not outro or (start + reduced >= outro["time"] - .5 and
-                                                    _safe_outro_exit(a, start + reduced))) and
-                _audible_seconds(a.get("energy", []), start + reduced, a["content_end"])
-                <= MAX_DISCARDED_MUSIC_SECONDS):
+        if (reduced < overlap and (not outro or start + reduced >= outro["time"] - .5) and
+                _safe_outro_exit(a, start + reduced)):
             alternative = _clash(a, b, start, cue, reduced, rate)
             if alternative < clash:
                 overlap, end, clash = reduced, start + reduced, alternative
