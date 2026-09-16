@@ -10,7 +10,7 @@ Executed in the Docker image:
 docker compose run --rm automix python -m unittest discover -s tests -v
 ```
 
-23 tests passed (16 engine, 6 API, 1 vocal-model), final run 3.342 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
+24 tests passed (17 engine, 6 API, 1 vocal-model), final run 3.303 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
 
 | Acceptance criterion | Implementation | Evidence |
 | --- | --- | --- |
@@ -31,6 +31,8 @@ docker compose run --rm automix python -m unittest discover -s tests -v
 For the reported *Swim* → *Timeless* miss, old AutoMix `6801a42b67ac43679a35b3d512eb6acf` waited until 219.09s and had no reverb. Revised export `b98e6b6167f246638ec6a1cc04eb4d49` finds the sustained drop at 209s, starts the overlap at 212.067s, exits at 220.067s, discards 4.0s of measured audible music, and applies the 20%-wet stereo room tail. It cues *Timeless* at 2.0s with an 8.0s overlap and 2.5 dB of model-gated vocal ducking. The 20,553,540 stereo samples are finite with a -1.0 dBFS peak. The stronger low/high-pass handoff reduces 3–8 kHz output by 3.95 dB in the first 0.3–0.8s of the overlap relative to the previous render, while total RMS changes only -0.17 dB. A synthetic test separately verifies that outgoing 4 kHz and incoming 500 Hz tones fall below 45% of their dry levels shortly after the transition begins.
 
 Browser audition advanced beyond the Swim handoff to 236.2s with ready state 4 and no media error. After the final container restart, the player restored the same export and was left paused at 208.4s, four seconds before the overlap, for listening. The filter and reverb signal paths are measured, but whether this cue sounds better still needs the user's ears.
+
+Review found that a later 1.75s model-active phrase could still be skipped. A new regression test rejects a later run of at least 1s, while allowing at most 1.25s of activity immediately at the exit as model-tail decay. Cached real-plan checks after the correction keep Swim at 212.07–220.07s, Weeknd at 221.17–229.49s, and Masakali at 274.91–284.51s, each with its structural reverb.
 
 On the user-provided Weeknd pair, the full-song scan detected a sustained final energy decline at 227.25 seconds in *I Was Never There*. Export `5107146f029e4b4aa6106cefb04bbe25` starts the outgoing overlap at 221.1667 seconds (19.90 seconds before the 241.0667-second file end), finishes it at 229.4870 seconds, and skips 7.0 seconds of measured audible music under the same threshold used for audible boundaries. The 8.3203-second overlap has 2.94 dB of vocal-band ducking and a 20%-wet, 1.4-second stereo reverb tail. The earlier measured tail RMS in the first second after the outgoing track stops was 11.61 dB below the incoming audio RMS. The rendered 21,042,168 stereo samples are all finite, and the sample peak is -1.0 dBFS.
 

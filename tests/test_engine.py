@@ -96,6 +96,16 @@ class EngineTests(unittest.TestCase):
         guarded = engine.plan_transition(a, b)
         self.assertEqual(guarded["mix_out_type"], "content_end")
 
+    def test_later_one_second_vocal_return_is_not_discarded(self):
+        a = analysis(120)
+        a["vocal"][109 * 4:111 * 4] = [.8] * (2 * 4)
+        self.assertFalse(engine._safe_outro_exit(a, 108))
+        a["vocal"] = [0.] * len(a["vocal"])
+        a["vocal"][108 * 4:108 * 4 + 5] = [.8] * 5
+        self.assertTrue(engine._safe_outro_exit(a, 108))
+        a["vocal"][108 * 4 + 5] = .8
+        self.assertFalse(engine._safe_outro_exit(a, 108))
+
         # A late measured beat can carry even an active tail until vocals subside.
         a, b = analysis(120, bpm=100), analysis(120, bpm=100)
         a["downbeats"] = [106]

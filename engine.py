@@ -231,9 +231,12 @@ def _safe_outro_exit(a: dict, end: float) -> bool:
         times = np.arange(end, a["content_end"], .25)
         if not _covered(a, times).all():
             return False
-        # ponytail: UMX vocal energy is not a calibrated singing probability; guard sustained returns only.
+        # ponytail: UMX activity is not a singing probability; allow brief immediate decay, not a later phrase.
         active = (_activity(a, times) >= VOCAL_ACTIVE).astype(int)
-        return not (len(active) >= 8 and np.any(np.convolve(active, np.ones(8, dtype=int), mode="valid") == 8))
+        quiet = np.flatnonzero(active == 0)
+        lead = int(quiet[0]) if len(quiet) else len(active)
+        return lead <= 5 and not (len(active) - lead >= 4 and
+                                  np.any(np.convolve(active[lead:], np.ones(4, dtype=int), mode="valid") == 4))
     return True
 
 
