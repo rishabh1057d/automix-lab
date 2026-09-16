@@ -1,6 +1,6 @@
 # Verification — 17 September 2026
 
-Status: working local prototype, with the integration and quality limits below. The current Swim fix and EQ change are awaiting final review before merge.
+Status: working local prototype, with the integration and quality limits below. The delayed-entry, dual-low-pass handoff has passed final review.
 
 ## Automated checks
 
@@ -28,7 +28,7 @@ docker compose run --rm automix python -m unittest discover -s tests -v
 
 ## Early-outro and reverb verification
 
-For the reported *Swim* → *Timeless* miss, old AutoMix `6801a42b67ac43679a35b3d512eb6acf` waited until 219.09s and had no reverb. Revised export `8751a101338d4d19a0e9fcc20ae20cba` finds the sustained drop at 209s, starts the overlap at 212.067s, exits at 220.067s, discards 4.0s of measured audible music, and applies the 20%-wet stereo room tail. It cues *Timeless* at 2.0s with an 8.0s overlap and 2.5 dB of model-gated vocal ducking. The 20,553,540 stereo samples are finite with a -1.0 dBFS peak. The stronger low/high-pass handoff reduces 3–8 kHz output by 3.95 dB in the first 0.3–0.8s of the overlap relative to the previous render, while total RMS changes only -0.17 dB. A synthetic test separately verifies that outgoing 4 kHz and incoming 500 Hz tones fall below 45% of their dry levels shortly after the transition begins.
+For the reported *Swim* → *Timeless* miss, old AutoMix `6801a42b67ac43679a35b3d512eb6acf` waited until 219.09s and had no reverb. Final export `d52c7b2ef6344f6bbad9b54bd8050b53` finds the sustained drop at 209s, starts the overlap at 212.067s, exits at 220.067s, discards 4.0s of measured audible music, and applies the 20%-wet stereo room tail. It cues *Timeless* at 2.0s with an 8.0s overlap and 2.5 dB of model-gated vocal ducking. The 20,553,540 stereo samples are finite with a -1.0 dBFS peak. A synthetic signal-path test verifies the new handoff: Song 1 begins fading and loses 4 kHz from the start; Song 2 remains silent before halfway, enters through a low-pass, and recovers its high-frequency tone near the end. Plain crossfade bypasses these effects.
 
 Browser audition advanced beyond the Swim handoff to 236.2s with ready state 4 and no media error. After the final container restart, the player restored the same export and was left paused at 208.4s, four seconds before the overlap, for listening. The filter and reverb signal paths are measured, but whether this cue sounds better still needs the user's ears.
 

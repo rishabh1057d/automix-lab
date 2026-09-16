@@ -188,24 +188,30 @@ class EngineTests(unittest.TestCase):
         np.testing.assert_allclose(audio[-1], second[-1], atol=1e-7)
 
     def test_automix_handoff_audibly_filters_both_tracks(self):
-        t = np.arange(engine.SR) / engine.SR
+        t = np.arange(engine.SR * 2) / engine.SR
         silence = np.zeros((len(t), 2), np.float32)
-        plan = {"tier": "safe-crossfade", "overlap_seconds": 1,
+        plan = {"tier": "safe-crossfade", "overlap_seconds": 2,
                 "bass_handoff_seconds": .8, "vocal_duck_db": 0}
-        window = slice(round(.2 * engine.SR), round(.35 * engine.SR))
+        early = slice(round(.2 * len(t)), round(.3 * len(t)))
+        before_middle = slice(round(.45 * len(t)), round(.49 * len(t)))
+        late = slice(round(.7 * len(t)), round(.8 * len(t)))
 
-        def level(frequency, outgoing):
+        def level(frequency, outgoing, window):
             tone = np.repeat(np.sin(2 * np.pi * frequency * t)[:, None], 2, axis=1).astype(np.float32)
             filtered = engine.blend_audio(tone if outgoing else silence,
                                           silence if outgoing else tone, plan)
-            dry = engine.blend_audio(tone if outgoing else silence,
-                                     silence if outgoing else tone, {"tier": "plain-crossfade"})
-            return float(np.sqrt(np.mean(filtered[window] ** 2) / np.mean(dry[window] ** 2)))
+            return float(np.sqrt(np.mean(filtered[window] ** 2)))
 
-        self.assertLess(level(4000, True), .45)   # outgoing highs are cut soon after overlap begins
-        self.assertGreater(level(500, True), .65)  # outgoing body remains
-        self.assertLess(level(500, False), .45)   # incoming lows wait for the handoff
-        self.assertGreater(level(4000, False), .7)
+        # Song 1 has already begun fading and strongly loses highs at transition start.
+        self.assertLess(level(4000, True, early), level(100, True, early) * .45)
+        # Song 2 is silent through the first half and begins only after the midpoint.
+        self.assertLess(level(100, False, early), 1e-5)
+        self.assertLess(level(100, False, before_middle), 1e-5)
+        self.assertGreater(level(100, False, late), .15)
+        # Song 2 enters muffled, then its low-pass opens as it rises.
+        self.assertLess(level(4000, False, late), level(100, False, late) * .8)
+        end = slice(round(.93 * len(t)), round(.98 * len(t)))
+        self.assertGreater(level(4000, False, end), level(100, False, end) * .7)
 
     def test_vocal_duck_is_audible_signal_processing(self):
         t = np.arange(4410) / engine.SR

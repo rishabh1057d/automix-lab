@@ -262,7 +262,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
         tier, rate = "dj-assisted", 1.0
         reasons.append("Tempo distance or beat confidence prevents stretching; structural cues and EQ remain available.")
     if not plain:
-        reasons.append("Outgoing low-pass closes from 3.2 kHz to 450 Hz while incoming high-pass opens from 1.8 kHz to 40 Hz.")
+        reasons.append("Song 1 fades under a 5 kHz-to-250 Hz low-pass; Song 2 waits until halfway, then rises through a 1.4 kHz low-pass that opens to full tone.")
     for item in (a, b):
         if item.get("beat_warning"):
             reasons.append(item["beat_warning"])
@@ -423,12 +423,13 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
     outgoing, incoming = outgoing[:n], incoming[:n]
     x = np.linspace(0, 1, n, dtype=np.float32)[:, None]
     if plan["tier"] != "plain-crossfade":
-        # ponytail: a 150 ms dry-to-filter ramp avoids a hard timbre jump at the splice.
+        # ponytail: 150 ms ramps avoid hard timbre jumps; add an adjustable curve only if listening tests need it.
         seconds = plan.get("overlap_seconds", n / SR)
         out_wet = np.clip(x * seconds / .15, 0, 1)
-        in_wet = np.clip((1 - x) * seconds / .15, 0, 1)
-        outgoing = outgoing * (1 - out_wet) + _filter_sweep(outgoing, [3200, 1800, 900, 450], "lowpass") * out_wet
-        incoming = incoming * (1 - in_wet) + _filter_sweep(incoming, [1800, 1000, 450, 40], "highpass") * in_wet
+        entry = np.clip(2 * x - 1, 0, 1)
+        in_wet = 1 - entry
+        outgoing = outgoing * (1 - out_wet) + _filter_sweep(outgoing, [5000, 2000, 700, 250], "lowpass") * out_wet
+        incoming = incoming * (1 - in_wet) + _filter_sweep(incoming, [250, 1000, 1800, 18000], "lowpass") * in_wet
     if plan["tier"] in ("beatmatched", "dj-assisted"):
         low = signal.butter(2, 200, fs=SR, output="sos")
         a_low = signal.sosfilt(low, outgoing, axis=0).astype(np.float32)
@@ -445,7 +446,8 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
             depth = 1 - 10 ** (-plan["vocal_duck_db"] / 20)
             outgoing -= a_mid * (depth * np.sin(np.pi * x) * x)
             incoming -= b_mid * (depth * np.sin(np.pi * x) * (1 - x))
-    return outgoing * np.cos(x * np.pi / 2) + incoming * np.sin(x * np.pi / 2)
+    incoming_gain = np.sin(entry * np.pi / 2) if plan["tier"] != "plain-crossfade" else np.sin(x * np.pi / 2)
+    return outgoing * np.cos(x * np.pi / 2) + incoming * incoming_gain
 
 
 @lru_cache(maxsize=1)
