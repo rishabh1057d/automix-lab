@@ -277,7 +277,10 @@ function renderInspector() {
   const bassApplied = /beatmatched|dj.assisted/i.test(transition.tier);
   const vocalEvidence = transition.vocal_evidence === "model" ? "UMX-HQ model" : transition.vocal_evidence || "unavailable";
   const duck = Number(transition.vocal_duck_db) || 0;
-  $("inspector-detail").textContent = `Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
+  const skipped = transition.discarded_music_seconds == null ? "" : ` · ${Number(transition.discarded_music_seconds).toFixed(1)}s audible music skipped`;
+  const exit = transition.mix_out_type === "full_track_end" ? "Plain fade at file end" : `${transition.mix_out_type === "sustained_outro_drop" ? "Outro" : "End-region"} exit at ${Number(transition.outgoing_end).toFixed(1)}s${skipped}`;
+  const reverb = Number(transition.reverb_wet) ? `Stereo reverb ${Math.round(Number(transition.reverb_wet) * 100)}% · ${Number(transition.reverb_tail_seconds).toFixed(1)}s tail` : "No added reverb";
+  $("inspector-detail").textContent = `${exit} · ${reverb} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
   drawAll();
 }
 

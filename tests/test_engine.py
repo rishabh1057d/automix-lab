@@ -43,6 +43,36 @@ class EngineTests(unittest.TestCase):
         self.assertIn(plan["incoming_cue"], b["downbeats"])
         self.assertEqual(engine.plan_transition(a, b, "plain")["incoming_cue"], 0)
 
+    def test_late_outro_exit_is_early_but_does_not_skip_music(self):
+        a, b = analysis(120), analysis(120)
+        a["energy"] = [.4] * (105 * 4) + [.03] * (15 * 4)
+        a["mix_out_candidates"] = engine._mix_out_candidates(a["energy"], a["content_end"])
+        self.assertTrue(a["mix_out_candidates"])
+        early = engine.plan_transition(a, b)
+        self.assertEqual(early["mix_out_type"], "sustained_outro_drop")
+        self.assertGreaterEqual(120 - early["outgoing_start"], 18)
+        self.assertGreaterEqual(early["outgoing_end"], early["mix_out_anchor"] - .5)
+        self.assertLessEqual(early["discarded_music_seconds"], 12)
+        self.assertGreater(early["reverb_wet"], 0)
+        self.assertEqual(engine.plan_transition(a, b, "plain")["reverb_wet"], 0)
+
+        # An ordinary energy dip followed by a full-strength return is not an outro.
+        rebound = [.4] * (90 * 4) + [.06] * (5 * 4) + [.4] * (25 * 4)
+        self.assertEqual(engine._mix_out_candidates(rebound, 120), [])
+
+        # Quiet music above the same audible floor as content_end still spends the budget.
+        quiet_outro = [.4] * (85 * 4) + [.06] * (35 * 4)
+        self.assertEqual(engine._audible_seconds(quiet_outro, 85, 120), 35)
+        self.assertEqual(engine._mix_out_candidates(quiet_outro, 120), [])
+
+        a, b = analysis(120), analysis(120, bpm=118)
+        a.update(mix_out_candidates=[{"time": 84, "type": "sustained_outro_drop"}],
+                 downbeats=[t for t in a["downbeats"] if t < 30 or t >= 90])
+        unmeasured = engine.plan_transition(a, b)
+        self.assertEqual(unmeasured["tier"], "safe-crossfade")
+        self.assertEqual(unmeasured["incoming_playback_rate"], 1)
+        self.assertEqual(unmeasured["reverb_wet"], 0)
+
     def test_vocal_overlap_is_simultaneous_not_mean(self):
         a, b = analysis(), analysis()
         a["vocal"][0:4] = [1.] * 4
@@ -121,6 +151,40 @@ class EngineTests(unittest.TestCase):
         middle = slice(1800, 2600)
         self.assertLess(float(np.sqrt(np.mean(ducked[middle] ** 2))),
                         float(np.sqrt(np.mean(plain[middle] ** 2))) * .85)
+
+    def test_reverb_has_real_stereo_tail_after_outgoing_stops(self):
+        outgoing = np.zeros((engine.SR * 4, 2), np.float32)
+        outgoing[-engine.SR // 2:] = .2 * np.sin(2 * np.pi * 440 * np.arange(engine.SR // 2) / engine.SR)[:, None]
+        room = engine._reverb_send(outgoing, .2)
+        self.assertGreater(float(np.sqrt(np.mean(room[len(outgoing):len(outgoing) + engine.SR // 2] ** 2))), .001)
+        self.assertLess(float(np.sqrt(np.mean(room[-engine.SR // 4:] ** 2))), .001)
+        self.assertGreater(float(np.mean(np.abs(room[:, 0] - room[:, 1]))), 1e-4)
+
+    def test_render_carries_outro_reverb_into_next_track(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            t = np.arange(engine.SR * 48) / engine.SR
+            audio = (.12 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+            tracks = []
+            for i in range(2):
+                path = root / f"{i}.wav"
+                sf.write(path, audio, engine.SR)
+                tracks.append({"id": str(i), "title": str(i), "path": path})
+            a, b = analysis(48), analysis(48)
+            a["energy"] = [.4] * (36 * 4) + [.03] * (12 * 4)
+            a["mix_out_candidates"] = engine._mix_out_candidates(a["energy"], 48)
+            with patch.object(engine, "analyze", side_effect=[a, b]):
+                result = engine.render_mix(tracks, "automix", root / "wet", root / "cache")
+            with patch.object(engine, "analyze", side_effect=[a, b]), \
+                    patch.object(engine, "_reverb_send", side_effect=lambda samples, wet:
+                                 np.zeros((len(samples) + len(engine._reverb_ir()) - 1, 2), np.float32)):
+                engine.render_mix(tracks, "automix", root / "dry", root / "cache")
+            wet, _ = sf.read(root / "wet" / "mix.wav", dtype="float32")
+            dry, _ = sf.read(root / "dry" / "mix.wav", dtype="float32")
+            end = round(result["transitions"][0]["timeline_end"] * engine.SR)
+            self.assertGreater(float(np.sqrt(np.mean((wet[end:end + engine.SR // 2] -
+                                                       dry[end:end + engine.SR // 2]) ** 2))), .001)
+            self.assertEqual(result["transitions"][0]["reverb_wet"], .2)
 
     def test_decode_silence_boundaries_and_cache(self):
         with tempfile.TemporaryDirectory() as folder:

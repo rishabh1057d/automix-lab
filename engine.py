@@ -14,8 +14,9 @@ import soundfile as sf
 from scipy import signal
 
 SR = 44100
-VERSION = "analysis-4-umxhq-3d05709f"
+VERSION = "analysis-6-outro-3d05709f"
 VOCAL_ACTIVE = .35
+MAX_DISCARDED_MUSIC_SECONDS = 12.0
 
 
 def decode(path: Path) -> np.ndarray:
@@ -38,6 +39,41 @@ def peaks(audio: np.ndarray, count: int = 1200) -> list:
     width = max(1, math.ceil(len(audio) / count))
     return [round(float(np.max(np.abs(audio[i:i + width]))), 5)
             for i in range(0, len(audio), width)]
+
+
+def _audible_seconds(energy: list[float], start: float, end: float) -> float:
+    curve = np.asarray(energy, dtype=float)
+    if len(curve) == 0:
+        return max(0.0, end - start)
+    floor = max(1e-5, float(np.quantile(curve, .85)) * .1)
+    lo, hi = max(0, round(start * 4)), min(len(curve), round(end * 4))
+    return float(np.count_nonzero(curve[lo:hi] > floor) / 4)
+
+
+def _mix_out_candidates(energy: list[float], content_end: float) -> list[dict]:
+    """Find the onset of a sustained final energy drop, not arbitrary quiet gaps."""
+    curve = np.asarray(energy, dtype=float)
+    end = min(len(curve), round(content_end * 4))
+    candidates = []
+    floor = max(1e-5, float(np.quantile(curve, .85)) * .25)
+    for i in range(max(16, end - 160), end - 24, 4):
+        pre = float(np.median(curve[i - 12:i]))
+        after = curve[i:end]
+        if pre < floor:
+            continue
+        early = float(np.median(after[:16]))
+        if early > pre * .72 or len(after) < 24:
+            continue
+        # Reject a verse dip that recovers into another full-strength section.
+        if np.max(np.convolve(after, np.ones(8) / 8, mode="valid")) > pre * .9:
+            continue
+        time = i / 4
+        discarded = _audible_seconds(energy, time, content_end)
+        if discarded <= MAX_DISCARDED_MUSIC_SECONDS:
+            candidates.append({"time": time, "type": "sustained_outro_drop",
+                               "strength": round(1 - early / (pre + 1e-12), 3),
+                               "discarded_music_seconds": discarded})
+    return candidates
 
 
 @lru_cache(maxsize=1)
@@ -121,6 +157,7 @@ def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
     active = np.flatnonzero(np.asarray(energy) > max(1e-5, reference * .1))
     audible_start = float(active[0] / 4) if len(active) else 0.0
     content_end = min(duration, float((active[-1] + 1) / 4)) if len(active) else duration
+    mix_out_candidates = _mix_out_candidates(energy, content_end) if len(active) else []
     try:
         beat = _beats(audio, progress) if reference > 1e-5 and duration >= 8 else {
             "beats": [], "downbeats": [], "bpm": 0.0, "beat_confidence": 0.0,
@@ -145,6 +182,7 @@ def analyze(path: Path, cache_dir: Path, progress=None) -> dict:
         vocal, vocal_windows = [0.0] * len(energy), []
         vocal_source, vocal_warning = "unavailable", "Silent audio: vocal analysis skipped."
     result = dict(beat, duration=duration, audible_start=audible_start, content_end=content_end,
+                  mix_out_candidates=mix_out_candidates,
                   energy=[round(x, 6) for x in energy], vocal=[round(x, 4) for x in vocal],
                   vocal_source=vocal_source, vocal_windows=vocal_windows, vocal_warning=vocal_warning,
                   waveform=peaks(audio), sha256=digest, cache_hit=False)
@@ -213,10 +251,13 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             reasons.append(item["beat_warning"])
         if item.get("vocal_warning"):
             reasons.append(item["vocal_warning"])
-    overlap = 6.0 if plain or tier == "safe-crossfade" else float(np.clip(8 * 60 / bpm_a, 4, 12))
+    outro = None if plain else next(iter(a.get("mix_out_candidates", [])), None)
+    overlap = 6.0 if plain or tier == "safe-crossfade" else float(np.clip((16 if outro else 8) * 60 / bpm_a, 4, 12))
     overlap = min(overlap, a["duration"] / 3, b["duration"] / 3)
-    end = a["duration"] if plain else a["content_end"]
+    end = a["duration"] if plain else (outro["time"] if outro else a["content_end"])
     cue = 0.0 if plain else b["audible_start"]
+    if outro:
+        reasons.append("Sustained late-song energy drop permits an early mix-out without discarding more than 12 seconds of audible music.")
     if tier in ("beatmatched", "dj-assisted"):
         incoming = [t for t in b.get("downbeats", [])
                     if b["audible_start"] <= t <= min(b["audible_start"] + 12,
@@ -230,7 +271,10 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             voice = float(_activity(b, np.arange(t, t + overlap, .25)).mean())
             return rise * .6 - voice * .35 - (t - b["audible_start"]) * .015
         starts = [t for t in a.get("downbeats", [])
-                  if end - 12 <= t + overlap <= end and t >= overlap] or [end - overlap]
+                  if (end - .5 <= t + overlap <= end + 4 if outro else end - 12 <= t + overlap <= end)
+                  and t >= overlap
+                  and _audible_seconds(a.get("energy", []), t + overlap, a["content_end"])
+                  <= MAX_DISCARDED_MUSIC_SECONDS] or [end - overlap]
         pairs = [(start, cue) for start in starts for cue in incoming]
         covered_pairs = [pair for pair in pairs
                          if _model_pair_covered(a, b, pair[0], pair[1], overlap, rate)]
@@ -249,13 +293,20 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     incoming_end = b["duration"] if plain else b["content_end"]
     overlap = min(overlap, outgoing_span / 3, max(1 / SR, (incoming_end - cue) / 3))
     start = end - overlap
+    if tier in ("beatmatched", "dj-assisted") and (
+            not any(abs(t - start) <= .125 for t in a.get("downbeats", [])) or
+            not any(abs(t - cue) <= .125 for t in b.get("downbeats", []))):
+        tier, rate = "safe-crossfade", 1.0
+        reasons.append("Selected cue pair lacks measured downbeats; tempo stretching and beat effects are disabled.")
     clash = _clash(a, b, start, cue, overlap, rate)
     vocal_evidence = ("model" if _model_pair_covered(a, b, start, cue, overlap, rate) else
                       "heuristic" if "heuristic" in (a.get("vocal_source", "") + b.get("vocal_source", "")).lower()
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
         reduced = max(4.0, overlap / 2)
-        if reduced < overlap and a["content_end"] - (start + reduced) <= 12:
+        if (reduced < overlap and (not outro or start + reduced >= outro["time"] - .5) and
+                _audible_seconds(a.get("energy", []), start + reduced, a["content_end"])
+                <= MAX_DISCARDED_MUSIC_SECONDS):
             alternative = _clash(a, b, start, cue, reduced, rate)
             if alternative < clash:
                 overlap, end, clash = reduced, start + reduced, alternative
@@ -268,7 +319,15 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .4 <= t - start <= overlap * .9]
     if nearby:
         bass = min(nearby, key=lambda t: abs(t - bass))
+    discarded_music = _audible_seconds(a.get("energy", []), end, a["content_end"]) if not plain else 0.0
+    reverb_wet = .2 if outro and tier in ("beatmatched", "dj-assisted") else 0.0
+    if reverb_wet:
+        reasons.append("A short stereo room tail carries the outgoing outro beneath the new track.")
     return {"tier": tier, "outgoing_start": start, "outgoing_end": end, "incoming_cue": cue,
+            "mix_out_type": outro["type"] if outro else ("full_track_end" if plain else "content_end"),
+            "mix_out_anchor": outro["time"] if outro else end,
+            "discarded_music_seconds": round(discarded_music, 2), "reverb_wet": reverb_wet,
+            "reverb_tail_seconds": 1.4 if reverb_wet else 0.0,
             "overlap_seconds": overlap, "overlap_beats": overlap * bpm_a / 60 if bpm_a else 0,
             "incoming_playback_rate": rate, "bass_handoff_seconds": bass, "vocal_overlap": clash,
             "vocal_duck_db": round(vocal_duck_db, 2), "vocal_evidence": vocal_evidence,
@@ -353,6 +412,30 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
     return outgoing * np.cos(x * np.pi / 2) + incoming * np.sin(x * np.pi / 2)
 
 
+@lru_cache(maxsize=1)
+def _reverb_ir() -> np.ndarray:
+    """Deterministic stereo room response: 30 ms pre-delay, 1.4 s decay."""
+    rng = np.random.default_rng(3127)
+    tail = round(1.4 * SR)
+    noise = rng.standard_normal((tail, 2)).astype(np.float32)
+    band = signal.butter(2, [180, 6500], btype="bandpass", fs=SR, output="sos")
+    noise = signal.sosfilt(band, noise, axis=0).astype(np.float32)
+    noise *= np.exp(-np.arange(tail, dtype=np.float32)[:, None] / (.28 * SR))
+    noise /= np.sqrt(np.sum(noise * noise, axis=0, keepdims=True))
+    return np.pad(noise, ((round(.03 * SR), 0), (0, 0)))
+
+
+def _reverb_send(outgoing: np.ndarray, wet: float) -> np.ndarray:
+    """Carry the outgoing room tail through its handoff into the new track."""
+    n = min(len(outgoing), round(1.2 * SR))
+    source = outgoing[-n:].copy()
+    source *= np.linspace(0, 1, n, dtype=np.float32)[:, None]
+    rendered = signal.fftconvolve(source, _reverb_ir(), mode="full", axes=0).astype(np.float32)
+    result = np.zeros((len(outgoing) + len(_reverb_ir()) - 1, 2), np.float32)
+    result[len(outgoing) - n:] = rendered * wet
+    return result
+
+
 def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path, progress=None) -> dict:
     if mode not in ("automix", "plain") or not 2 <= len(tracks) <= 8:
         raise ValueError("Choose automix/plain and between 2 and 8 tracks.")
@@ -380,6 +463,9 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
             end = len(current)
             plan["tier"] = "safe-crossfade"
             plan["incoming_playback_rate"] = 1.0
+            plan["reverb_wet"] = 0.0
+            plan["reverb_tail_seconds"] = 0.0
+            plan["mix_out_type"] = "content_end"
             plan["reasons"].append("Audible ending precedes available audio; fading the remaining samples conservatively.")
         end = max(1, min(len(current), end))
         n = min(n, max(1, end // 2))
@@ -397,9 +483,17 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         plan.update(index=i, outgoing_title=tracks[i]["title"], incoming_title=tracks[i + 1]["title"],
                     timeline_start=transition_start, timeline_end=transition_start + n / SR,
                     overlap_seconds=n / SR, **mapping)
-        segments.extend((current[:start], blend_audio(current[start:end], incoming[:n], plan)))
+        blended = blend_audio(current[start:end], incoming[:n], plan)
+        next_audio = incoming[n:]
+        if plan["reverb_wet"]:
+            room = _reverb_send(current[start:end], plan["reverb_wet"])
+            blended += room[:n]
+            next_audio = next_audio.copy()
+            tail = min(len(next_audio), len(room) - n)
+            next_audio[:tail] += room[n:n + tail]
+        segments.extend((current[:start], blended))
         timeline += end / SR
-        current = incoming[n:]
+        current = next_audio
         source_offset = plan["incoming_cue"] + mapping["source_resume"] - mapping["output_resume"] + n / SR
         track_details[i + 1].update(timeline_start=transition_start, incoming_cue=plan["incoming_cue"], **mapping)
         transitions.append(plan)

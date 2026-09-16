@@ -1,4 +1,4 @@
-# Verification — 15 September 2026
+# Verification — 16 September 2026
 
 Status: working local prototype, with the integration and quality limits below. Final independent re-review is pending; the feature branch must not merge until that review covers its current head.
 
@@ -10,7 +10,7 @@ Executed in the Docker image:
 docker compose run --rm automix python -m unittest discover -s tests -v
 ```
 
-18 tests passed (11 engine, 6 API, 1 vocal-model), final run 3.659 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
+21 tests passed (14 engine, 6 API, 1 vocal-model), final run 3.381 seconds. `node --check static/app.js` also passed. No line-coverage percentage was measured.
 
 | Acceptance criterion | Implementation | Evidence |
 | --- | --- | --- |
@@ -24,6 +24,15 @@ docker compose run --rm automix python -m unittest discover -s tests -v
 | Optional Spotify metadata without Spotify audio | PKCE routes and metadata endpoint | Unconfigured state and invalid callback tested; live account flow not tested |
 | Reproducible local deployment | Dockerfile and Compose | Clean-copy startup and original-session restart passed |
 | Model-backed vocal-aware transitions | Pinned UMX-HQ ONNX, pair scoring, guarded ducking | Model contract/checksum check, synthetic collision tests, and real two-track render below |
+| Early structural outro and reverb | Whole-song 250 ms energy scan, audible-music budget, stereo convolution tail | Fade/rebound fixtures, rendered-tail comparison, two real queues, and browser audition below |
+
+## Early-outro and reverb verification
+
+On the user-provided Weeknd pair, the full-song scan detected a sustained final energy decline at 227.25 seconds in *I Was Never There*. Export `5107146f029e4b4aa6106cefb04bbe25` starts the outgoing overlap at 221.1667 seconds (19.90 seconds before the 241.0667-second file end), finishes it at 229.4870 seconds, and skips 7.0 seconds of measured audible music under the same threshold used for audible boundaries. The 8.3203-second overlap has 2.94 dB of vocal-band ducking and a 20%-wet, 1.4-second stereo reverb tail. The earlier measured tail RMS in the first second after the outgoing track stops was 11.61 dB below the incoming audio RMS. The rendered 21,042,168 stereo samples are all finite, and the sample peak is -1.0 dBFS.
+
+The three-track licensed demo (`6975871aec364fc5a9810daa313bb062`) kept Style Funk's first transition at its content end with no added reverb. Its second transition found Leopard Print Elevator's final decline, mixed out after that onset, and added the reverb tail. This demonstrates that the effect is conditional rather than applied to every transition.
+
+The browser restored final user-pair mix `d4103efbc49a4692930ac2dd5837cd90` and showed `Outro exit at 229.5s`, `7.0s audible music skipped`, `Stereo reverb 20%`, and `Vocal duck 2.9 dB`. Audition playback advanced through the handoff with ready state 4 and no media error. It was left paused four seconds before that transition for user testing. Listening quality remains subjective and requires the user's ears; these checks prove the processing and playback paths, not superiority over BitChord or Spotify.
 
 ## Vocal-model verification
 
