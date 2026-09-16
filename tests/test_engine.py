@@ -63,15 +63,60 @@ class EngineTests(unittest.TestCase):
         # Quiet music above the same audible floor as content_end still spends the budget.
         quiet_outro = [.4] * (85 * 4) + [.06] * (35 * 4)
         self.assertEqual(engine._audible_seconds(quiet_outro, 85, 120), 35)
-        self.assertEqual(engine._mix_out_candidates(quiet_outro, 120), [])
+        a, b = analysis(120), analysis(120)
+        a["energy"] = quiet_outro
+        a["mix_out_candidates"] = engine._mix_out_candidates(quiet_outro, 120)
+        self.assertTrue(a["mix_out_candidates"])
+        self.assertEqual(engine.plan_transition(a, b)["mix_out_type"], "content_end")
 
         a, b = analysis(120), analysis(120, bpm=118)
         a.update(mix_out_candidates=[{"time": 84, "type": "sustained_outro_drop"}],
                  downbeats=[t for t in a["downbeats"] if t < 30 or t >= 90])
         unmeasured = engine.plan_transition(a, b)
-        self.assertEqual(unmeasured["tier"], "safe-crossfade")
-        self.assertEqual(unmeasured["incoming_playback_rate"], 1)
+        self.assertEqual(unmeasured["mix_out_type"], "content_end")
         self.assertEqual(unmeasured["reverb_wet"], 0)
+
+    def test_audible_outro_can_mix_early_only_after_later_vocals(self):
+        a, b = analysis(224), analysis(224)
+        a["energy"] = [.38] * (207 * 4) + [.2] * (2 * 4) + [.1] * (15 * 4)
+        a["downbeats"] = [200, 204, 208, 212, 216, 220]
+        a["vocal"][216 * 4:219 * 4] = [.8] * (3 * 4)
+        a["mix_out_candidates"] = engine._mix_out_candidates(a["energy"], a["content_end"])
+        self.assertTrue(a["mix_out_candidates"])
+        plan = engine.plan_transition(a, b)
+        self.assertEqual(plan["mix_out_type"], "sustained_outro_drop")
+        self.assertGreater(plan["mix_out_anchor"], a["mix_out_candidates"][0]["time"])
+        self.assertLess(plan["outgoing_start"], 216)
+        self.assertGreaterEqual(plan["outgoing_end"], 219)
+        self.assertLess(plan["outgoing_end"], a["content_end"])
+        self.assertLessEqual(plan["discarded_music_seconds"], 12)
+
+        # Without a later measured downbeat, keep the ending rather than cut the voice.
+        a["downbeats"] = [200, 204, 208]
+        guarded = engine.plan_transition(a, b)
+        self.assertEqual(guarded["mix_out_type"], "content_end")
+        self.assertGreaterEqual(guarded["outgoing_end"], 219)
+        self.assertLessEqual(guarded["discarded_music_seconds"], 12)
+
+    def test_later_one_second_vocal_return_is_not_discarded(self):
+        a = analysis(120)
+        a["vocal"][109 * 4:111 * 4] = [.8] * (2 * 4)
+        self.assertFalse(engine._safe_outro_exit(a, 108))
+        a["vocal"] = [0.] * len(a["vocal"])
+        a["vocal"][108 * 4:108 * 4 + 5] = [.8] * 5
+        self.assertTrue(engine._safe_outro_exit(a, 108))
+        a["vocal"][108 * 4 + 5] = .8
+        self.assertFalse(engine._safe_outro_exit(a, 108))
+
+        # A late measured beat can carry even an active tail until vocals subside.
+        a, b = analysis(120, bpm=100), analysis(120, bpm=100)
+        a["downbeats"] = [106]
+        a["mix_out_candidates"] = [{"time": 110, "type": "sustained_outro_drop"}]
+        a["vocal"][110 * 4:115 * 4] = [.8] * (5 * 4)
+        carried = engine.plan_transition(a, b)
+        self.assertEqual(carried["mix_out_type"], "sustained_outro_drop")
+        self.assertGreater(carried["outgoing_end"], 115)
+        self.assertGreater(carried["reverb_wet"], 0)
 
     def test_vocal_overlap_is_simultaneous_not_mean(self):
         a, b = analysis(), analysis()
@@ -110,9 +155,10 @@ class EngineTests(unittest.TestCase):
         a.update(content_end=120, downbeats=[100], vocal=[1.] * 480)
         b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 464)
         bounded = engine.plan_transition(a, b)
-        self.assertEqual((bounded["outgoing_start"], bounded["outgoing_end"]), (100, 108))
+        self.assertEqual((bounded["outgoing_start"], bounded["outgoing_end"]), (112, 120))
         self.assertEqual(bounded["overlap_seconds"], 8)
-        self.assertGreater(bounded["vocal_duck_db"], 0)
+        self.assertEqual(bounded["tier"], "safe-crossfade")
+        self.assertEqual(bounded["vocal_duck_db"], 0)
 
     def test_unmeasured_vocals_are_unknown_and_safe_tier_never_claims_duck(self):
         a, b = analysis(120), analysis(120, cue=40)
@@ -136,10 +182,30 @@ class EngineTests(unittest.TestCase):
         n = 4410
         first = np.tile([1., 0.], (n, 1)).astype(np.float32)
         second = np.tile([0., 1.], (n, 1)).astype(np.float32)
-        audio = engine.blend_audio(first, second, {"tier": "safe-crossfade"})
+        audio = engine.blend_audio(first, second, {"tier": "plain-crossfade"})
         np.testing.assert_allclose((audio ** 2).sum(axis=1), 1, atol=2e-7)
         np.testing.assert_allclose(audio[0], first[0], atol=1e-7)
         np.testing.assert_allclose(audio[-1], second[-1], atol=1e-7)
+
+    def test_automix_handoff_audibly_filters_both_tracks(self):
+        t = np.arange(engine.SR) / engine.SR
+        silence = np.zeros((len(t), 2), np.float32)
+        plan = {"tier": "safe-crossfade", "overlap_seconds": 1,
+                "bass_handoff_seconds": .8, "vocal_duck_db": 0}
+        window = slice(round(.2 * engine.SR), round(.35 * engine.SR))
+
+        def level(frequency, outgoing):
+            tone = np.repeat(np.sin(2 * np.pi * frequency * t)[:, None], 2, axis=1).astype(np.float32)
+            filtered = engine.blend_audio(tone if outgoing else silence,
+                                          silence if outgoing else tone, plan)
+            dry = engine.blend_audio(tone if outgoing else silence,
+                                     silence if outgoing else tone, {"tier": "plain-crossfade"})
+            return float(np.sqrt(np.mean(filtered[window] ** 2) / np.mean(dry[window] ** 2)))
+
+        self.assertLess(level(4000, True), .45)   # outgoing highs are cut soon after overlap begins
+        self.assertGreater(level(500, True), .65)  # outgoing body remains
+        self.assertLess(level(500, False), .45)   # incoming lows wait for the handoff
+        self.assertGreater(level(4000, False), .7)
 
     def test_vocal_duck_is_audible_signal_processing(self):
         t = np.arange(4410) / engine.SR
