@@ -27,7 +27,7 @@ class EngineTests(unittest.TestCase):
             plan = engine.plan_transition(analysis(), analysis(bpm=bpm))
             self.assertEqual(plan["tier"], expected)
             self.assertLessEqual(abs(plan["incoming_playback_rate"] - 1), .04)
-            self.assertGreaterEqual(plan["overlap_seconds"], 4)
+            self.assertGreaterEqual(plan["overlap_seconds"], 7)
             self.assertLessEqual(plan["overlap_seconds"], 12)
         self.assertEqual(engine.plan_transition(analysis(confidence=.1), analysis(confidence=.1))["tier"], "safe-crossfade")
         self.assertEqual(engine.plan_transition(analysis(confidence=.19), analysis(confidence=.19))["tier"], "dj-assisted")
@@ -149,7 +149,7 @@ class EngineTests(unittest.TestCase):
         b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 4 + [0.] * 460)
         shortened = engine.plan_transition(a, b)
         self.assertEqual(shortened["outgoing_start"], 100)
-        self.assertEqual(shortened["overlap_seconds"], 4)
+        self.assertEqual(shortened["overlap_seconds"], 7)
 
         a, b = analysis(120, bpm=60), analysis(120, bpm=60)
         a.update(content_end=120, downbeats=[100], vocal=[1.] * 480)
@@ -159,6 +159,10 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(bounded["overlap_seconds"], 8)
         self.assertEqual(bounded["tier"], "safe-crossfade")
         self.assertEqual(bounded["vocal_duck_db"], 0)
+
+        too_short = engine.plan_transition(analysis(5), analysis(5))
+        self.assertEqual(too_short["overlap_seconds"], 5)
+        self.assertIn("shorter than seven seconds", " ".join(too_short["reasons"]))
 
     def test_unmeasured_vocals_are_unknown_and_safe_tier_never_claims_duck(self):
         a, b = analysis(120), analysis(120, cue=40)
