@@ -17,6 +17,7 @@ SR = 44100
 VERSION = "analysis-7-vocal-outro-3d05709f"
 VOCAL_ACTIVE = .35
 MAX_DISCARDED_MUSIC_SECONDS = 12.0
+MIN_AUTOMIX_OVERLAP_SECONDS = 7.0
 
 
 def decode(path: Path) -> np.ndarray:
@@ -270,8 +271,9 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             reasons.append(item["vocal_warning"])
     outros = [] if plain else a.get("mix_out_candidates", [])
     outro = next(iter(outros), None)
-    overlap = 6.0 if plain or tier == "safe-crossfade" else float(np.clip((16 if outro else 8) * 60 / bpm_a, 4, 12))
-    overlap = min(overlap, a["duration"] / 3, b["duration"] / 3)
+    overlap = (6.0 if plain else float(np.clip(
+        (16 if outro else 8) * 60 / bpm_a if tier != "safe-crossfade" else MIN_AUTOMIX_OVERLAP_SECONDS,
+        MIN_AUTOMIX_OVERLAP_SECONDS, 12)))
     end = a["duration"] if plain else (outro["time"] if outro else a["content_end"])
     cue = 0.0 if plain else b["audible_start"]
     if outro and tier == "safe-crossfade":
@@ -302,7 +304,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
                 outro = candidate
                 break
         if not starts:
-            outro, overlap, end = None, float(np.clip(8 * 60 / bpm_a, 4, 12)), a["content_end"]
+            outro, overlap, end = None, float(np.clip(8 * 60 / bpm_a, MIN_AUTOMIX_OVERLAP_SECONDS, 12)), a["content_end"]
             starts = [t for t in a.get("downbeats", []) if end - 12 <= t + overlap <= end
                       and t >= overlap and _safe_outro_exit(a, t + overlap)]
         starts = starts or [end - overlap]
@@ -324,7 +326,10 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
         reasons.append("Sustained late-song energy drop; overlap carries the outro until the remaining tail is safe to skip.")
     outgoing_span = end if plain else max(1 / SR, end - a["audible_start"])
     incoming_end = b["duration"] if plain else b["content_end"]
-    overlap = min(overlap, outgoing_span / 3, max(1 / SR, (incoming_end - cue) / 3))
+    available = min(outgoing_span, max(1 / SR, (incoming_end - cue) / max(rate, 1e-6)))
+    overlap = min(overlap, available) if not plain else min(overlap, available / 3)
+    if not plain and overlap < MIN_AUTOMIX_OVERLAP_SECONDS:
+        reasons.append("Selected audio is shorter than seven seconds; the longest physically possible handoff is used.")
     start = end - overlap
     if tier in ("beatmatched", "dj-assisted") and (
             not any(abs(t - start) <= .125 for t in a.get("downbeats", [])) or
@@ -336,7 +341,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
                       "heuristic" if "heuristic" in (a.get("vocal_source", "") + b.get("vocal_source", "")).lower()
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
-        reduced = max(4.0, overlap / 2)
+        reduced = max(MIN_AUTOMIX_OVERLAP_SECONDS, overlap / 2)
         if (reduced < overlap and (not outro or start + reduced >= outro["time"] - .5) and
                 _safe_outro_exit(a, start + reduced)):
             alternative = _clash(a, b, start, cue, reduced, rate)
