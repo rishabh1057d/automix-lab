@@ -1,4 +1,4 @@
-"""API boundaries and lifecycle tested without Spotify credentials or model downloads."""
+"""API boundaries and lifecycle tested without model downloads."""
 import io
 import json
 import tempfile
@@ -33,11 +33,9 @@ class ApiTests(unittest.TestCase):
         self.patch.stop()
         self.temp.cleanup()
 
-    def test_demo_and_optional_spotify_without_credentials(self):
+    def test_demo_and_empty_session(self):
         self.assertEqual(len(self.client.get("/api/demo-tracks").json()["tracks"]), 3)
         self.assertEqual(self.client.get("/api/latest").json(), {"automix": None, "plain": None})
-        self.assertFalse(self.client.get("/api/spotify/now-playing").json()["connected"])
-        self.assertEqual(self.client.get("/auth/spotify/callback?state=bad&code=x").status_code, 400)
 
     def test_reject_bad_input_without_scheduling(self):
         cases = [

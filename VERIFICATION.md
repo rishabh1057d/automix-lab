@@ -21,7 +21,6 @@ docker compose run --rm automix python -m unittest discover -s tests -v
 | Bound output peaks and handle silence | Global output gain, conservative fallback | Unit tests plus full real WAV scan |
 | Audition and compare transitions in browser | Audio player, audition buttons, handoff-relative A/B positioning | Both audition buttons, advancing playback, pause and mode switching exercised |
 | Validate uploads and recover sessions | API boundary, content hashes, persisted source lists | Invalid upload, byte limit, cross-origin, range and restored-source tests |
-| Optional Spotify metadata without Spotify audio | PKCE routes and metadata endpoint | Unconfigured state and invalid callback tested; live account flow not tested |
 | Reproducible local deployment | Dockerfile and Compose | Clean-copy startup and original-session restart passed |
 | Model-backed vocal-aware transitions | Pinned UMX-HQ ONNX, pair scoring, guarded ducking | Model contract/checksum check, synthetic collision tests, and real two-track render below |
 | Early structural outro and reverb | Whole-song 250 ms energy scan, audible-music budget, stereo convolution tail | Fade/rebound fixtures, rendered-tail comparison, two real queues, and browser audition below |
@@ -40,7 +39,7 @@ On the user-provided Weeknd pair, the full-song scan detected a sustained final 
 
 The three-track licensed demo (`6975871aec364fc5a9810daa313bb062`) kept Style Funk's first transition at its content end with no added reverb. Its second transition found Leopard Print Elevator's final decline, mixed out after that onset, and added the reverb tail. This demonstrates that the effect is conditional rather than applied to every transition.
 
-The browser restored final user-pair mix `d4103efbc49a4692930ac2dd5837cd90` and showed `Outro exit at 229.5s`, `7.0s audible music skipped`, `Stereo reverb 20%`, and `Vocal duck 2.9 dB`. Audition playback advanced through the handoff with ready state 4 and no media error. It was left paused four seconds before that transition for user testing. Listening quality remains subjective and requires the user's ears; these checks prove the processing and playback paths, not superiority over BitChord or Spotify.
+The browser restored final user-pair mix `d4103efbc49a4692930ac2dd5837cd90` and showed `Outro exit at 229.5s`, `7.0s audible music skipped`, `Stereo reverb 20%`, and `Vocal duck 2.9 dB`. Audition playback advanced through the handoff with ready state 4 and no media error. It was left paused four seconds before that transition for user testing. Listening quality remains subjective and requires the user's ears; these checks prove the processing and playback paths, not superiority over BitChord.
 
 ## Vocal-model verification
 
@@ -76,9 +75,9 @@ Stopped that verification container and restarted the original project with `doc
 
 ## Limits and outstanding verification
 
-- Not a Spotify playback extension or first-party integration. Live Spotify login requires the user's registered developer app and remains unverified.
+- Not a streaming playback extension or first-party integration.
 - UMX-HQ activity is source-separation evidence, not a calibrated singing probability or lyric-onset transcript. Queue order is user-supplied; recommendations are not implemented.
-- Automated correctness and browser playback do not prove musical quality or superiority to Spotify. No blinded listening study, true-peak/loudness analysis, load test or streaming-client benchmark was performed.
+- Automated correctness and browser playback do not prove musical quality. No blinded listening study, true-peak/loudness analysis, load test or streaming-client benchmark was performed.
 - GitHub issue #1 tracks the prototype. No separate defect issues were open at handoff. Earlier review findings were addressed, but the final independent re-review attempt failed because its agent reached a usage limit. No final approval is claimed and no merge was performed.
 
 See the README for setup and the pitch for the authorization and evaluation work needed before presenting this as a production integration.

@@ -10,7 +10,7 @@ Install/start Docker Desktop, then run in this directory:
 docker compose up --build
 ```
 
-Open **http://127.0.0.1:8765**. The first analysis downloads pinned Beat This! and UMX-HQ model weights. No GPU, Python installation, Spotify subscription, or account is needed for the demo.
+Open **http://127.0.0.1:8765**. The first analysis downloads pinned Beat This! and UMX-HQ model weights. No GPU or Python installation is needed for the demo.
 
 1. Click **Build demo mix**. The app downloads three tracks from Kevin MacLeod's official catalog, checks their SHA-256 hashes, analyzes them and renders AutoMix plus a plain reference.
 2. Click **Hear transition 01** or **02** to start four seconds before a handoff.
@@ -33,21 +33,6 @@ The renderer processes two tracks simultaneously during each overlap, using pitc
 The plain comparison preserves track beginnings and uses a six-second equal-power crossfade, shortened for tiny files.
 
 This is **offline rendering with interactive playback**, not an extension that manipulates live streaming audio. The worker processes one mix at a time. The app accepts a maximum of three pending jobs.
-
-## Spotify context
-
-Spotify already provides [Automix](https://support.spotify.com/us/article/tracks-transitions/), [mixed playlists](https://support.spotify.com/us/article/mixed-playlists/), and selected [DJ integrations](https://support.spotify.com/us/article/dj-integration/). This prototype is an independent transition-quality experiment; it is not endorsed by Spotify or proof of superiority to those features.
-
-Public [Spotify developer policy](https://developer.spotify.com/policy) restricts audio analysis and mixing. Authorized DJ partnerships are distinct from a general public Web API integration. This app never obtains, analyzes or mixes Spotify audio.
-
-Optional now-playing metadata:
-
-1. Create a Spotify developer app using your own account.
-2. Register `http://127.0.0.1:8765/auth/spotify/callback` exactly.
-3. Copy `.env.example` to `.env`, set `SPOTIFY_CLIENT_ID`, and restart with `docker compose up -d`.
-4. Use **Connect Spotify** in the app. It requests only `user-read-currently-playing`.
-
-OAuth uses PKCE and browser-bound state. Tokens are kept in server memory, never in client JavaScript or the repository. Restarting signs you out. Spotify account/app access restrictions still apply. Playback and rendering work without these credentials.
 
 ## Verification
 

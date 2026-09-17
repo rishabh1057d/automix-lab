@@ -1,4 +1,4 @@
-"""Offline audio analysis and mixing. Original implementation; no Spotify audio access."""
+"""Offline audio analysis and mixing."""
 from __future__ import annotations
 
 import hashlib
@@ -501,9 +501,9 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         # Source positions after the first transition's rate ramp map with slope 1.
         end = round((plan["outgoing_end"] - source_offset) * SR)
         n = round(plan["overlap_seconds"] * SR)
-        if end <= 1:
-            # A stale or contradictory analysis must never produce negative timeline slices.
-            end = len(current)
+        if end <= 0:
+            # A stale or exhausted analysis must never reuse the incoming track as outgoing audio.
+            end = 1
             plan["tier"] = "safe-crossfade"
             plan["incoming_playback_rate"] = 1.0
             plan["reverb_wet"] = 0.0

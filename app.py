@@ -1,8 +1,7 @@
-"""Local AutoMix workbench. Audio never comes from Spotify."""
+"""Local AutoMix workbench."""
 from __future__ import annotations
 
 import asyncio
-import base64
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 import hashlib
@@ -11,16 +10,14 @@ import logging
 import os
 from pathlib import Path
 import re
-import secrets
 import threading
 import time
-from urllib.parse import urlencode
 import uuid
 
 import httpx
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
@@ -31,10 +28,6 @@ MAX_BODY = 6 * MAX_FILE + 1024 * 1024
 WORKER = ThreadPoolExecutor(max_workers=1)
 LOCK = threading.Lock()
 JOBS: dict[str, dict] = {}
-SESSIONS: dict[str, dict] = {}
-OAUTH: dict[str, dict] = {}
-CLIENT_ID = os.environ.get("SPOTIFY_CLIENT_ID", "")
-REDIRECT = os.environ.get("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8765/auth/spotify/callback")
 logging.basicConfig(level=logging.INFO)
 LOG = logging.getLogger("automix")
 
@@ -141,7 +134,7 @@ app.add_middleware(LocalBoundary)
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "spotify_configured": bool(CLIENT_ID)}
+    return {"status": "ok"}
 
 
 def valid_id(ident):
@@ -159,8 +152,7 @@ def result_path(ident):
 
 @app.get("/api/demo-tracks")
 def demo_tracks():
-    return {"tracks": [{**track, "available": (DATA / "tracks" / track["filename"]).is_file()} for track in MANIFEST],
-            "spotify_configured": bool(CLIENT_ID)}
+    return {"tracks": [{**track, "available": (DATA / "tracks" / track["filename"]).is_file()} for track in MANIFEST]}
 
 
 def file_hash(path):
@@ -328,97 +320,6 @@ def latest():
     key = results[0].get("playlist_key") if results else None
     return {mode: next((r for r in results if r.get("mode") == mode and r.get("playlist_key") == key), None)
             for mode in ("automix", "plain")}
-
-
-@app.get("/api/spotify/status")
-def spotify_status(request: Request):
-    session = SESSIONS.get(request.cookies.get("spotify_session", ""))
-    return {"configured": bool(CLIENT_ID), "connected": bool(session), "redirect_uri": REDIRECT,
-            "message": "Spotify supplies metadata only. Mixing uses local audio."}
-
-
-@app.get("/auth/spotify")
-def spotify_auth():
-    if not CLIENT_ID:
-        raise HTTPException(503, "Set SPOTIFY_CLIENT_ID and register the redirect URI from .env.example, then restart.")
-    now = time.time()
-    for key in list(OAUTH):
-        if OAUTH[key]["expires"] < now:
-            OAUTH.pop(key, None)
-    state = secrets.token_urlsafe(32)
-    verifier = secrets.token_urlsafe(64)
-    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-    OAUTH[state] = {"verifier": verifier, "expires": now + 600}
-    params = dict(client_id=CLIENT_ID, response_type="code", redirect_uri=REDIRECT,
-                  scope="user-read-currently-playing", state=state,
-                  code_challenge_method="S256", code_challenge=challenge)
-    response = RedirectResponse("https://accounts.spotify.com/authorize?" + urlencode(params))
-    response.set_cookie("spotify_state", state, httponly=True, samesite="lax", max_age=600)
-    return response
-
-
-@app.get("/auth/spotify/callback")
-async def spotify_callback(request: Request, state: str = "", code: str = "", error: str = ""):
-    expected = request.cookies.get("spotify_state", "")
-    flow = OAUTH.pop(state, None) if expected and secrets.compare_digest(state, expected) else None
-    if not flow or flow["expires"] < time.time():
-        raise HTTPException(400, "This Spotify sign-in expired. Start again.")
-    if error or not code:
-        return RedirectResponse("/?spotify=cancelled")
-    async with httpx.AsyncClient(timeout=20) as client:
-        response = await client.post("https://accounts.spotify.com/api/token", data=dict(
-            grant_type="authorization_code", code=code, redirect_uri=REDIRECT,
-            client_id=CLIENT_ID, code_verifier=flow["verifier"]))
-    if response.status_code != 200:
-        raise HTTPException(502, "Spotify did not complete the sign-in.")
-    token = response.json()
-    ident = secrets.token_urlsafe(32)
-    SESSIONS[ident] = {**token, "expires_at": time.time() + token["expires_in"]}
-    result = RedirectResponse("/")
-    result.set_cookie("spotify_session", ident, httponly=True, samesite="lax", max_age=86400)
-    result.delete_cookie("spotify_state")
-    return result
-
-
-@app.get("/api/spotify/now-playing")
-async def now_playing(request: Request):
-    session = SESSIONS.get(request.cookies.get("spotify_session", ""))
-    if not session:
-        return {"connected": False, "track": None}
-    async with httpx.AsyncClient(timeout=20) as client:
-        if session["expires_at"] <= time.time() + 30:
-            refresh = await client.post("https://accounts.spotify.com/api/token", data=dict(
-                grant_type="refresh_token", refresh_token=session.get("refresh_token", ""), client_id=CLIENT_ID))
-            if refresh.status_code != 200:
-                SESSIONS.pop(request.cookies.get("spotify_session", ""), None)
-                return {"connected": False, "track": None, "message": "Please reconnect Spotify."}
-            session.update(refresh.json())
-            session["expires_at"] = time.time() + session["expires_in"]
-        response = await client.get("https://api.spotify.com/v1/me/player/currently-playing",
-                                    headers={"Authorization": "Bearer " + session["access_token"]})
-    if response.status_code == 204:
-        return {"connected": True, "track": None}
-    if response.status_code == 429:
-        return JSONResponse({"detail": "Spotify rate limit. Try again later."}, 429,
-                            headers={"Retry-After": response.headers.get("Retry-After", "60")})
-    if response.status_code != 200:
-        raise HTTPException(502, "Spotify metadata is temporarily unavailable.")
-    item = response.json().get("item")
-    if not item:
-        return {"connected": True, "track": None}
-    images = item.get("album", {}).get("images", [])
-    return {"connected": True, "track": {"title": item["name"],
-            "artist": ", ".join(a["name"] for a in item.get("artists", [])),
-            "url": item.get("external_urls", {}).get("spotify"),
-            "artwork": images[0]["url"] if images else None}}
-
-
-@app.post("/api/spotify/disconnect")
-def disconnect(request: Request):
-    SESSIONS.pop(request.cookies.get("spotify_session", ""), None)
-    response = JSONResponse({"connected": False})
-    response.delete_cookie("spotify_session")
-    return response
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="assets")

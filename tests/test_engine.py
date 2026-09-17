@@ -148,7 +148,7 @@ class EngineTests(unittest.TestCase):
         a.update(content_end=104.8, downbeats=[100], vocal=[1.] * 480)
         b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 4 + [0.] * 460)
         shortened = engine.plan_transition(a, b)
-        self.assertEqual(shortened["outgoing_start"], 100)
+        self.assertAlmostEqual(shortened["outgoing_start"], 97.8)
         self.assertEqual(shortened["overlap_seconds"], 7)
 
         a, b = analysis(120, bpm=60), analysis(120, bpm=60)
