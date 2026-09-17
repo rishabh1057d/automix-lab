@@ -4,7 +4,7 @@
 
 Improve the experience between songs by choosing entry/exit cues from the audio, managing vocal and bass competition, and applying small tempo corrections only when evidence supports them. Show the chosen cue and its rationale so the quality is inspectable.
 
-Spotify already offers Automix and mixed playlists. The credible pitch is a measured approach to better handoffs, not inventing automated mixing or asserting that Spotify lacks it. This prototype demonstrates a subset with local licensed recordings.
+Music platforms already offer transition features. The credible pitch is a measured approach to better handoffs, demonstrated with local licensed recordings.
 
 ## Demonstration
 
@@ -14,21 +14,21 @@ The demo catalog shares a nominal 100 BPM. That makes it a useful controlled exa
 
 ## Engineering fit
 
-Python is appropriate for model inference, experimentation and offline audio analysis. Spotify's public [audio research infrastructure article](https://engineering.atspotify.com/2020/11/its-all-just-wiggly-air-building-infrastructure-to-support-audio-research) describes Python alongside native media libraries; its [ML platform article](https://engineering.atspotify.com/2023/2/unleashing-ml-innovation-at-spotify-with-ray) also emphasizes Python research workflows.
+Python is appropriate for model inference, experimentation and offline audio analysis.
 
-Spotify has multiple clients and languages. Its [web-player architecture article](https://engineering.atspotify.com/2019/03/building-spotifys-new-web-player) describes React/Redux and desktop web technology historically, not a guarantee of today's complete stack. Our proposed first-party deployment would retain Python for analysis/evaluation and implement sample-accurate rendering in the existing native playback engine. This prototype does not know Spotify's private APIs and is not a drop-in component.
+A production deployment would retain Python for analysis/evaluation and implement sample-accurate rendering in its native playback engine. This prototype is a local workbench, not a drop-in streaming component.
 
 The portable output contract contains cue times, overlap, playback-rate correction, bass handoff, confidence and reasons. A production handoff would add recording-version identity, calibrated model scores, decoder clock contracts, streaming buffering behavior and measured resource limits.
 
 ## Evidence required before a quality claim
 
-Compare with Spotify's existing features using authorized playback conditions and a representative licensed evaluation set. Use blinded, loudness-matched listening tests across electronic, acoustic, vocal-led, tempo-changing, sparse and short tracks. Record preference, perceived discontinuity, phrase interruption and artifacts alongside objective beat error, clipping, latency, memory and fallback frequency.
+Compare transition versions with a representative licensed evaluation set. Use blinded, loudness-matched listening tests across electronic, acoustic, vocal-led, tempo-changing, sparse and short tracks. Record preference, perceived discontinuity, phrase interruption and artifacts alongside objective beat error, clipping, latency, memory and fallback frequency.
 
-This version has automated correctness checks and an interactive audition path. It does not claim universal beat correctness, accurate singer onset, proven listener preference, production real-time performance or a deployed Spotify partnership.
+This version has automated correctness checks and an interactive audition path. It does not claim universal beat correctness, accurate singer onset, proven listener preference, production real-time performance or a deployed streaming partnership.
 
 ## Integration boundary
 
-Public [developer policy](https://developer.spotify.com/policy) restricts mixing and analysis of Spotify content. Spotify's selected [DJ integrations](https://support.spotify.com/us/article/dj-integration/) demonstrate that separately authorized partnerships exist. A future integration requires appropriate Spotify and rightsholder authorization; adding Web API credentials to this app only enables now-playing metadata.
+This local workbench analyzes only recordings supplied to it. A future streaming integration would require appropriate platform and rightsholder authorization.
 
 ## Practical next step
 

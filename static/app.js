@@ -2,7 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const audio = $("audio");
-const state = { tracks: [], files: [], results: { automix: null, plain: null }, mode: "automix", busy: false, transition: 0, spotify: false, spotifyConnected: false, playing: false };
+const state = { tracks: [], files: [], results: { automix: null, plain: null }, mode: "automix", busy: false, transition: 0, playing: false };
 const colors = ["#ee937d", "#7fbbb0", "#b5b3d0", "#dcf87a", "#e7ba7e", "#a1bfd6"];
 const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const time = seconds => { const value = Math.max(0, Math.floor(Number(seconds) || 0)); return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`; };
@@ -101,8 +101,6 @@ async function buildSession(useDemo) {
 async function loadTracks() {
   const data = await request("/api/demo-tracks");
   state.tracks = data.tracks || [];
-  state.spotify = !!data.spotify_configured;
-  $("spotify-connect").textContent = state.spotify ? "Connect ↗" : "Details ↗";
   renderQueue();
 }
 
@@ -312,33 +310,6 @@ function audition(index) {
 
 function showDialog(title, content) { $("dialog-title").textContent = title; $("dialog-body").innerHTML = content; $("info-dialog").showModal(); }
 
-async function refreshSpotify() {
-  const status = await request("/api/spotify/status");
-  state.spotify = !!status.configured;
-  state.spotifyConnected = !!status.connected;
-  $("spotify-connect").textContent = state.spotifyConnected ? "Refresh ↻" : state.spotify ? "Connect ↗" : "Details ↗";
-  if (!state.spotifyConnected) return;
-  const now = await request("/api/spotify/now-playing");
-  const container = $("spotify-message");
-  container.replaceChildren();
-  if (!now.track) { container.textContent = "Connected. Play something in Spotify, then refresh."; return; }
-  const track = now.track;
-  const label = document.createElement("span");
-  label.textContent = `${track.title} · ${track.artist}`;
-  container.append(label);
-  if (track.url && /^https:\/\/open\.spotify\.com\//.test(track.url)) {
-    const link = document.createElement("a"); link.href = track.url; link.target = "_blank"; link.rel = "noreferrer"; link.textContent = "Open in Spotify ↗";
-    link.style.cssText = "display:block;color:var(--yellow);margin-top:3px";
-    container.append(link);
-  }
-  const icon = document.querySelector(".spotify-symbol");
-  if (track.artwork && /^https:\/\//.test(track.artwork)) {
-    const img = document.createElement("img"); img.src = track.artwork; img.alt = `${track.title} cover art from Spotify`; img.width = 38; img.height = 38;
-    img.style.cssText = "width:38px;height:38px;object-fit:cover;border-radius:3px";
-    icon.replaceChildren(img); icon.removeAttribute("aria-hidden"); icon.style.cssText = "width:38px;height:38px;background:transparent";
-  }
-}
-
 $("build-demo").onclick = () => buildSession(true);
 $("build-upload").onclick = () => buildSession(false);
 ["hero-upload", "queue-upload", "browse-files"].forEach(id => $(id).onclick = () => $("file-input").click());
@@ -361,16 +332,7 @@ $("waveform-wrap").onclick = event => { if (!active()) return; const rect = $("w
 $("transition-select").onchange = event => { state.transition = Number(event.target.value); renderInspector(); updatePlayback(); };
 $("dialog-close").onclick = () => $("info-dialog").close();
 $("info-dialog").onclick = event => { if (event.target === $("info-dialog")) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close(); } };
-$("show-credits").onclick = () => showDialog("Good music. Proper credit.", `<p>The demo playlist uses music with permission under Creative Commons. Source recordings remain the work of their original artists.</p>${state.tracks.map(track => `<div class="credit-row"><strong>${escapeHTML(track.title)}</strong><br>${escapeHTML(track.artist || "Kevin MacLeod")} · ${escapeHTML(track.license || "CC BY 4.0")}<br><a href="${escapeHTML(track.source_url || "https://incompetech.com/music/royalty-free/")}" target="_blank" rel="noreferrer">Original track & license ↗</a></div>`).join("")}<p>An original implementation inspired by BitChord's transition concepts. Vocal activity uses the UMX-HQ source-separation model when available and an explicitly labelled DSP fallback otherwise. Spotify already offers mixing features; this independent research demo is not affiliated with Spotify.</p>`);
-$("spotify-connect").onclick = async () => {
-  if (state.spotifyConnected) {
-    try { await refreshSpotify(); } catch (error) { showError(error); }
-    return;
-  }
-  if (state.spotify) { window.location.href = "/auth/spotify"; return; }
-  try { const status = await request("/api/spotify/status"); if (status.configured) { state.spotify = true; window.location.href = "/auth/spotify"; return; } } catch { /* The core audio demo remains available without optional metadata integration. */ }
-  showDialog("Spotify, in context.", "<p>The optional connection displays your current Spotify track and a link to open it in Spotify. Audio analysis and rendering always use the demo recordings or your uploaded files.</p><p>To enable it, configure the Spotify client ID and the registered redirect URI described in the project README, then restart the app.</p><p>Spotify already has AutoMix and playlist mixing features. This is an independent research demo, not an official Spotify product.</p>");
-};
+$("show-credits").onclick = () => showDialog("Good music. Proper credit.", `<p>The demo playlist uses music with permission under Creative Commons. Source recordings remain the work of their original artists.</p>${state.tracks.map(track => `<div class="credit-row"><strong>${escapeHTML(track.title)}</strong><br>${escapeHTML(track.artist || "Kevin MacLeod")} · ${escapeHTML(track.license || "CC BY 4.0")}<br><a href="${escapeHTML(track.source_url || "https://incompetech.com/music/royalty-free/")}" target="_blank" rel="noreferrer">Original track & license ↗</a></div>`).join("")}<p>An original implementation inspired by BitChord's transition concepts. Vocal activity uses the UMX-HQ source-separation model when available and an explicitly labelled DSP fallback otherwise.</p>`);
 for (const event of ["dragenter", "dragover"]) $("upload-zone").addEventListener(event, e => { e.preventDefault(); if (!state.busy) $("upload-zone").classList.add("dragover"); });
 for (const event of ["dragleave", "drop"]) $("upload-zone").addEventListener(event, e => { e.preventDefault(); $("upload-zone").classList.remove("dragover"); });
 $("upload-zone").addEventListener("drop", event => chooseFiles(event.dataTransfer.files));
@@ -385,7 +347,6 @@ async function init() {
     state.results.automix = latest.automix || null; state.results.plain = latest.plain || null;
     if (state.results.automix || state.results.plain) setMode(state.results.automix ? "automix" : "plain", false);
   }
-  try { await refreshSpotify(); } catch { $("spotify-message").textContent = "Spotify metadata is unavailable. Your local mix is ready to use."; }
   drawAll();
 }
 init();
