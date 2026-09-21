@@ -33,14 +33,12 @@ class ApiTests(unittest.TestCase):
         self.patch.stop()
         self.temp.cleanup()
 
-    def test_demo_and_empty_session(self):
-        self.assertEqual(len(self.client.get("/api/demo-tracks").json()["tracks"]), 3)
+    def test_empty_session(self):
         self.assertEqual(self.client.get("/api/latest").json(), {"automix": None, "plain": None})
 
     def test_reject_bad_input_without_scheduling(self):
         cases = [
-            ({"mode": "wrong", "demo": "true"}, None, 400),
-            ({"demo": "true", "track_ids": '["made-up", "style-funk"]'}, None, 400),
+            ({"mode": "wrong"}, None, 400),
             ({}, [("files", ("../escape.wav", wav(), "audio/wav")),
                    ("files", ("fine.wav", wav(), "audio/wav"))], 400),
             ({}, [("files", ("bad.wav", b"not audio", "audio/wav")),
@@ -57,7 +55,7 @@ class ApiTests(unittest.TestCase):
 
     def test_limits_and_cross_origin_requests(self):
         self.assertEqual(self.client.post("/api/mixes", headers={"Content-Length": str(server.MAX_BODY + 1)}).status_code, 413)
-        self.assertEqual(self.client.post("/api/demo-tracks/download", headers={"Origin": "https://unrelated.example"}).status_code, 403)
+        self.assertEqual(self.client.post("/api/mixes", headers={"Origin": "https://unrelated.example"}).status_code, 403)
         self.assertEqual(self.client.get("/api/health", headers={"Host": "untrusted.example"}).status_code, 403)
         with patch.object(server, "MAX_BODY", 4):
             self.assertEqual(self.client.post("/api/mixes", content=iter([b"a=1", b"234"]),

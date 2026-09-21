@@ -1,9 +1,5 @@
 # Third-party notices and provenance
 
-## Inspiration
-
-BitChord commit `9e0c53d942077420b392f203173ba8f98b82cbd6` informed the behavior specification. BitChord is GPLv3; some analyzer files identify AGPLv3 Orchard origins. No BitChord/Orchard source files, Android runtime or packaged model assets are distributed here.
-
 ## Runtime dependencies
 
 - Python: PSF license.
@@ -19,20 +15,10 @@ A deployment/distribution license audit must include the installed packages' bun
 
 ## Beat model
 
-[Beat This!](https://github.com/CPJKU/beat_this), Foscarin, Schlüter and Widmer, ISMIR 2024. Code and published weights are MIT licensed by the Institute of Computational Perception, JKU Linz, Austria. This demo uses the upstream `small0` checkpoint downloaded by the official package. No model weights are in Git. The upstream authors note that training-data rights can require separate assessment.
+[Beat This!](https://github.com/CPJKU/beat_this), Foscarin, Schlüter and Widmer, ISMIR 2024. Code and published weights are MIT licensed by the Institute of Computational Perception, JKU Linz, Austria. This project uses the upstream `small0` checkpoint downloaded by the official package. No model weights are in Git. The upstream authors note that training-data rights can require separate assessment.
 
 ## Vocal model
 
 [Open-Unmix UMX-HQ](https://zenodo.org/records/3370489) weights are identified as MIT. The app downloads the `vocals.onnx` export from the `edgetools/umx-hq` Hugging Face repository at pinned revision `87f26a5b2ed19488b5e453059a0a1d530423fe4a`, verifies SHA-256 `3d05709ff7197bbd4a33aee759e4e82002acb491f41c94770227ab57507b6ccb`, and does not commit model weights to Git. UMX-HQ estimates are labelled as model evidence, not calibrated singing probabilities.
-
-## Demo recordings
-
-All recordings are by **Kevin MacLeod (incompetech.com)**, licensed under [Creative Commons Attribution 4.0](https://creativecommons.org/licenses/by/4.0/). Download URLs and SHA-256 hashes are in `demo_tracks.json`.
-
-- [Style Funk](https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100058), ISRC USUAN1100058.
-- [Leopard Print Elevator](https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1500077), ISRC USUAN1500077.
-- [Lasting Hope](https://incompetech.com/music/royalty-free/index.html?isrc=USUAN1100178), ISRC USUAN1100178.
-
-Changes in rendered exports may include decoding/resampling, trimming, tempo correction, overlapping, filtering and gain adjustment. Retain this attribution and describe modifications when sharing a demo export. No endorsement by the artist is implied.
 
 User-provided recordings remain the user's responsibility to license for the intended processing and distribution.

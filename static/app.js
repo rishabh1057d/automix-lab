@@ -2,7 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const audio = $("audio");
-const state = { tracks: [], files: [], results: { automix: null, plain: null }, mode: "automix", busy: false, transition: 0, playing: false };
+const state = { files: [], results: { automix: null, plain: null }, mode: "automix", busy: false, transition: 0, playing: false };
 const colors = ["#ee937d", "#7fbbb0", "#b5b3d0", "#dcf87a", "#e7ba7e", "#a1bfd6"];
 const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const time = seconds => { const value = Math.max(0, Math.floor(Number(seconds) || 0)); return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`; };
@@ -28,9 +28,8 @@ function showError(error) {
 function setBusy(busy) {
   state.busy = busy;
   document.body.classList.toggle("busy", busy);
-  ["build-demo", "build-upload", "hero-upload", "queue-upload", "browse-files", "reset-demo", "file-input"].forEach(id => $(id).disabled = busy);
+  ["build-upload", "hero-upload", "queue-upload", "browse-files", "reset-queue", "file-input"].forEach(id => $(id).disabled = busy);
   ["mode-automix", "mode-plain"].forEach(id => $(id).disabled = busy && !state.results[id.replace("mode-", "")]);
-  $("build-demo").innerHTML = busy ? '<span class="play-small">◌</span> Building your session…' : '<span class="play-small">▶</span> Build demo mix <span class="button-arrow">↗</span>';
 }
 
 function setProgress(job, baseline = false) {
@@ -61,8 +60,7 @@ async function createMix(mode, baseline = false) {
   form.append("mode", mode);
   const source = state.results[mode === "plain" ? "automix" : "plain"];
   if (baseline && source) form.append("source_mix_id", source.id);
-  else if (state.files.length) state.files.forEach(file => form.append("files", file));
-  else { form.append("demo", "true"); form.append("track_ids", JSON.stringify(state.tracks.map(track => track.id))); }
+  else state.files.forEach(file => form.append("files", file));
   const started = await request("/api/mixes", { method: "POST", body: form });
   const job = await waitForJob(started.id, baseline);
   const id = job.result_id || job.mix_id || job.result?.id || started.id;
@@ -71,19 +69,13 @@ async function createMix(mode, baseline = false) {
   return result;
 }
 
-async function buildSession(useDemo) {
+async function buildSession() {
   if (state.busy) return;
-  if (!useDemo && (state.files.length < 2 || state.files.length > 6)) return showError("Choose 2–6 MP3, WAV, or FLAC files to build a mix.");
-  if (useDemo) { state.files = []; $("file-input").value = ""; $("queue-actions").hidden = true; renderQueue(); }
+  if (state.files.length < 2 || state.files.length > 6) return showError("Choose 2–6 MP3, WAV, or FLAC files to build a mix.");
   $("error-banner").hidden = true;
   setBusy(true);
   setProgress({ status: "queued", progress: 0, message: "Preparing your tracks. The first analysis also loads the beat model and can take a few minutes." });
   try {
-    if (useDemo) {
-      const started = await request("/api/demo-tracks/download", { method: "POST" });
-      if (started.id) await waitForJob(started.id);
-      await loadTracks();
-    }
     // A new source must not accidentally reuse the previous session's A/B comparison.
     audio.pause();
     state.results = { automix: null, plain: null };
@@ -98,22 +90,16 @@ async function buildSession(useDemo) {
   finally { setBusy(false); }
 }
 
-async function loadTracks() {
-  const data = await request("/api/demo-tracks");
-  state.tracks = data.tracks || [];
-  renderQueue();
-}
-
 function renderQueue() {
   const analyzed = (state.results.automix || state.results.plain)?.tracks || [];
-  const restoredUploads = !state.files.length && analyzed.length && !analyzed.every(track => state.tracks.some(demo => demo.id === track.id));
-  const tracks = state.files.length ? state.files.map((file, index) => ({ id: String(index), title: file.name.replace(/\.[^.]+$/, ""), artist: "Your local audio", size: file.size })) : restoredUploads ? analyzed.map(track => ({ ...track, artist: "Your local audio" })) : state.tracks;
+  const restoredUploads = !state.files.length && analyzed.length;
+  const tracks = state.files.length ? state.files.map((file, index) => ({ id: String(index), title: file.name.replace(/\.[^.]+$/, ""), artist: "Your local audio", size: file.size })) : restoredUploads ? analyzed.map(track => ({ ...track, artist: "Your local audio" })) : [];
   $("queue-count").textContent = String(tracks.length).padStart(2, "0");
   $("track-list").innerHTML = tracks.map((track, index) => {
     const analysis = analyzed[index];
     const bpm = analysis?.bpm ?? track.bpm;
     const meta = bpm ? `${Math.round(bpm)} BPM` : "Ready to analyze";
-    return `<div class="track-row"><span class="track-number">${String(index + 1).padStart(2, "0")}</span><div class="track-art art-${index % 3}" aria-hidden="true"><span>${String(index + 1).padStart(2, "0")}</span></div><div class="track-info"><h3 title="${escapeHTML(track.title)}">${escapeHTML(track.title)}</h3><p>${escapeHTML(track.artist || "Local audio")}</p></div><div class="track-meta"><span>${time(analysis?.duration || track.duration)}</span><small class="${analysis ? "detected" : ""}">${escapeHTML(meta)}${bpm ? analysis ? " · detected" : " · catalog" : ""}</small></div></div>`;
+    return `<div class="track-row"><span class="track-number">${String(index + 1).padStart(2, "0")}</span><div class="track-art art-${index % 3}" aria-hidden="true"><span>${String(index + 1).padStart(2, "0")}</span></div><div class="track-info"><h3 title="${escapeHTML(track.title)}">${escapeHTML(track.title)}</h3><p>${escapeHTML(track.artist || "Local audio")}</p></div><div class="track-meta"><span>${time(analysis?.duration || track.duration)}</span><small class="${analysis ? "detected" : ""}">${escapeHTML(meta)}${bpm ? analysis ? " · detected" : "" : ""}</small></div></div>`;
   }).join("") || '<div class="loading-tracks">Add two tracks to start your session.</div>';
 }
 
@@ -310,11 +296,10 @@ function audition(index) {
 
 function showDialog(title, content) { $("dialog-title").textContent = title; $("dialog-body").innerHTML = content; $("info-dialog").showModal(); }
 
-$("build-demo").onclick = () => buildSession(true);
-$("build-upload").onclick = () => buildSession(false);
+$("build-upload").onclick = () => buildSession();
 ["hero-upload", "queue-upload", "browse-files"].forEach(id => $(id).onclick = () => $("file-input").click());
 $("file-input").onchange = event => chooseFiles(event.target.files);
-$("reset-demo").onclick = () => { state.files = []; state.results = { automix: null, plain: null }; $("queue-actions").hidden = true; $("file-input").value = ""; clearPlayer(); renderQueue(); };
+$("reset-queue").onclick = () => { state.files = []; state.results = { automix: null, plain: null }; $("queue-actions").hidden = true; $("file-input").value = ""; clearPlayer(); renderQueue(); };
 $("mode-automix").onclick = () => { if (state.mode !== "automix") setMode("automix"); };
 $("mode-plain").onclick = () => { if (state.mode !== "plain") setMode("plain"); };
 $("play").onclick = () => audio.paused ? playAudio() : audio.pause();
@@ -332,7 +317,7 @@ $("waveform-wrap").onclick = event => { if (!active()) return; const rect = $("w
 $("transition-select").onchange = event => { state.transition = Number(event.target.value); renderInspector(); updatePlayback(); };
 $("dialog-close").onclick = () => $("info-dialog").close();
 $("info-dialog").onclick = event => { if (event.target === $("info-dialog")) { const rect = event.target.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) event.target.close(); } };
-$("show-credits").onclick = () => showDialog("Good music. Proper credit.", `<p>The demo playlist uses music with permission under Creative Commons. Source recordings remain the work of their original artists.</p>${state.tracks.map(track => `<div class="credit-row"><strong>${escapeHTML(track.title)}</strong><br>${escapeHTML(track.artist || "Kevin MacLeod")} · ${escapeHTML(track.license || "CC BY 4.0")}<br><a href="${escapeHTML(track.source_url || "https://incompetech.com/music/royalty-free/")}" target="_blank" rel="noreferrer">Original track & license ↗</a></div>`).join("")}<p>An original implementation inspired by BitChord's transition concepts. Vocal activity uses the UMX-HQ source-separation model when available and an explicitly labelled DSP fallback otherwise.</p>`);
+$("show-credits").onclick = () => showDialog("Your audio, your responsibility.", "<p>Process and distribute only recordings you have the right to use. Vocal activity uses the UMX-HQ source-separation model when available and an explicitly labelled DSP fallback otherwise.</p>");
 for (const event of ["dragenter", "dragover"]) $("upload-zone").addEventListener(event, e => { e.preventDefault(); if (!state.busy) $("upload-zone").classList.add("dragover"); });
 for (const event of ["dragleave", "drop"]) $("upload-zone").addEventListener(event, e => { e.preventDefault(); $("upload-zone").classList.remove("dragover"); });
 $("upload-zone").addEventListener("drop", event => chooseFiles(event.dataTransfer.files));
@@ -340,13 +325,13 @@ new ResizeObserver(drawAll).observe($("waveform-wrap"));
 document.addEventListener("keydown", event => { if (event.code === "Space" && !/INPUT|BUTTON|SELECT|TEXTAREA|A/.test(document.activeElement.tagName) && !$("info-dialog").open && active()) { event.preventDefault(); audio.paused ? playAudio() : audio.pause(); } });
 
 async function init() {
-  const loaded = await Promise.allSettled([loadTracks(), request("/api/latest")]);
-  if (loaded[0].status === "rejected") { $("track-list").innerHTML = '<div class="loading-tracks">Could not load demo tracks. Refresh when the server is ready.</div>'; showError(loaded[0].reason); }
-  if (loaded[1].status === "fulfilled") {
-    const latest = loaded[1].value;
+  const loaded = await request("/api/latest").catch(error => { showError(error); return null; });
+  if (loaded) {
+    const latest = loaded;
     state.results.automix = latest.automix || null; state.results.plain = latest.plain || null;
     if (state.results.automix || state.results.plain) setMode(state.results.automix ? "automix" : "plain", false);
   }
+  renderQueue();
   drawAll();
 }
 init();

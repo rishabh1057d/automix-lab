@@ -22,7 +22,7 @@ docker compose stop
 
 ## Use it
 
-1. Select **Build demo mix** to download the licensed demo tracks, or **Add audio** to choose 2–6 MP3, WAV, or FLAC files. File-picker order is queue order.
+1. Select **Add audio** to choose 2–6 MP3, WAV, or FLAC files. File-picker order is queue order.
 2. Build **AutoMix**. The UI polls a background job while analysis, planning, and rendering run.
 3. Switch to **Plain crossfade** to compare the same queue without the AutoMix decisions.
 4. Use **Hear transition** to audition a handoff from four seconds before its start.
@@ -34,7 +34,7 @@ Uploads must be mono/stereo, 2 seconds–10 minutes, 8–192 kHz, and at most 10
 
 ```mermaid
 flowchart LR
-  UI[Browser workbench] -->|demo queue or local recordings| API[FastAPI app]
+  UI[Browser workbench] -->|local recordings| API[FastAPI app]
   API -->|one background job| ENGINE[Transition engine]
   ENGINE --> ANALYZE[Analyze every track]
   ANALYZE --> PLAN[Plan every adjacent handoff]
@@ -209,7 +209,6 @@ AutoMix-Lab/
 ├── app.py                    FastAPI server, validation, jobs, and local API
 ├── engine.py                 Decode, analysis, planning, DSP, and WAV renderer
 ├── vocal_model.py            Pinned UMX-HQ download, verification, and inference
-├── demo_tracks.json          Demo metadata, source URLs, and SHA-256 checksums
 ├── docker-compose.yml        Local service plus persistent ./data mount
 ├── Dockerfile                Reproducible Python/CPU-model runtime image
 ├── requirements.txt          Pinned Python dependencies
@@ -222,14 +221,13 @@ AutoMix-Lab/
 │   ├── test_engine.py        Planner, DSP, rendering, timeline, and safety tests
 │   └── test_vocal_model.py   Vocal-model file and inference contract tests
 ├── data/                     Local runtime state; ignored by Git
-│   ├── tracks/               Verified demo downloads
 │   ├── uploads/              User-provided recordings
 │   ├── analysis/             SHA-256/version-keyed analysis cache
 │   ├── models/umx-hq/        Downloaded vocal model
 │   ├── mixes/<mix-id>/       WAV, plans, sources, and results
 │   ├── jobs/                 Persisted public job state
 │   └── docs/                 Preserved local historical verification records
-└── THIRD_PARTY_NOTICES.md    Dependency, model, demo-audio, and inspiration provenance
+└── THIRD_PARTY_NOTICES.md    Dependency and model provenance
 ```
 
 `data/` is ignored by Git. Deleting it removes cached models, imports, and renders; the app does not delete original source files outside the project.
@@ -239,9 +237,7 @@ AutoMix-Lab/
 | Route | Purpose |
 | --- | --- |
 | `GET /api/health` | Health check |
-| `GET /api/demo-tracks` | Demo metadata and local availability |
-| `POST /api/demo-tracks/download` | Start verified demo download |
-| `POST /api/mixes` | Submit a demo queue, uploads, or saved sources for rendering |
+| `POST /api/mixes` | Submit uploads or saved sources for rendering |
 | `GET /api/jobs/{id}` | Poll job progress |
 | `GET /api/mixes/{id}` | Read a completed result |
 | `GET /api/mixes/{id}/audio` | Stream WAV with range support |
@@ -278,4 +274,4 @@ When improving the transition engine:
 
 ## Rights and provenance
 
-See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licenses, model provenance, BitChord inspiration disclosure, and demo-recording attribution. Only process and distribute recordings you have the right to use.
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for dependency licenses and model provenance. Only process and distribute recordings you have the right to use.
