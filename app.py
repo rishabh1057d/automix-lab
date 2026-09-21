@@ -14,7 +14,6 @@ import threading
 import time
 import uuid
 
-import httpx
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -22,7 +21,6 @@ from fastapi.staticfiles import StaticFiles
 
 ROOT = Path(__file__).parent
 DATA = Path(os.environ.get("DATA_DIR", ROOT / "data"))
-MANIFEST = json.loads((ROOT / "demo_tracks.json").read_text())
 MAX_FILE = 100 * 1024 * 1024
 MAX_BODY = 6 * MAX_FILE + 1024 * 1024
 WORKER = ThreadPoolExecutor(max_workers=1)
@@ -72,7 +70,7 @@ def new_job(function):
 
 @asynccontextmanager
 async def lifespan(app):
-    for name in ("tracks", "uploads", "jobs", "mixes", "analysis"):
+    for name in ("uploads", "jobs", "mixes", "analysis"):
         (DATA / name).mkdir(parents=True, exist_ok=True)
     for path in (DATA / "jobs").glob("*.json"):
         try:
@@ -150,47 +148,6 @@ def result_path(ident):
     return path
 
 
-@app.get("/api/demo-tracks")
-def demo_tracks():
-    return {"tracks": [{**track, "available": (DATA / "tracks" / track["filename"]).is_file()} for track in MANIFEST]}
-
-
-def file_hash(path):
-    with path.open("rb") as handle:
-        return hashlib.file_digest(handle, "sha256").hexdigest()
-
-
-def download_demo(job_id):
-    with httpx.Client(timeout=90, follow_redirects=True) as client:
-        for index, track in enumerate(MANIFEST):
-            dest = DATA / "tracks" / track["filename"]
-            update_job(job_id, "downloading", index * 30, f"{index + 1} of {len(MANIFEST)}: {track['title']}")
-            if dest.is_file() and file_hash(dest) == track["sha256"]:
-                continue
-            part = dest.with_suffix(".part")
-            try:
-                with client.stream("GET", track["url"]) as response:
-                    response.raise_for_status()
-                    total = 0
-                    with part.open("wb") as handle:
-                        for chunk in response.iter_bytes(65536):
-                            total += len(chunk)
-                            if total > MAX_FILE:
-                                raise ValueError("Demo download exceeded its expected size limit.")
-                            handle.write(chunk)
-                if file_hash(part) != track["sha256"]:
-                    raise ValueError(f"The official file for {track['title']} changed. Check its license and checksum before updating the manifest.")
-                part.replace(dest)
-            finally:
-                part.unlink(missing_ok=True)
-    update_job(job_id, "complete", 100, "Three licensed tracks are ready.")
-
-
-@app.post("/api/demo-tracks/download")
-def download_tracks():
-    return new_job(download_demo)
-
-
 @app.get("/api/jobs/{ident}")
 def get_job(ident: str):
     valid_id(ident)
@@ -244,20 +201,6 @@ async def create_mix(request: Request):
             tracks = json.loads(source_file.read_text())
             if any(not Path(track["path"]).is_file() for track in tracks):
                 raise HTTPException(409, "An original track is missing. Please reselect your files.")
-        elif str(form.get("demo", "")).lower() == "true":
-            try:
-                ids = json.loads(str(form.get("track_ids", json.dumps([t["id"] for t in MANIFEST]))))
-                if not isinstance(ids, list) or not 2 <= len(ids) <= 6 or not all(isinstance(i, str) for i in ids):
-                    raise ValueError()
-                by_id = {t["id"]: t for t in MANIFEST}
-                for ident in ids:
-                    track = by_id[ident]
-                    path = DATA / "tracks" / track["filename"]
-                    if not path.is_file():
-                        raise HTTPException(409, "Download the demo tracks first.")
-                    tracks.append(dict(id=ident, title=track["title"], path=path))
-            except (ValueError, KeyError, TypeError) as exc:
-                raise HTTPException(400, "Choose two to six valid demo track IDs.") from exc
         else:
             uploads = form.getlist("files")
             if not 2 <= len(uploads) <= 6:
