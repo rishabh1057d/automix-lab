@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import re
@@ -232,6 +233,23 @@ async def create_mix(request: Request):
                     tracks.append(dict(id=ident, title=Path(name).stem, path=target))
                 finally:
                     temp.unlink(missing_ok=True)
+        if form.get("vocal_entry_overrides") is not None:
+            try:
+                overrides = json.loads(str(form["vocal_entry_overrides"]))
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(400, "Main verse timestamps must be a JSON array.") from exc
+            if not isinstance(overrides, list) or len(overrides) != len(tracks):
+                raise HTTPException(400, "Provide one main verse timestamp or null per track.")
+            for index, (track, value) in enumerate(zip(tracks, overrides)):
+                if value is None:
+                    track.pop("vocal_entry_override", None)
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                    raise HTTPException(400, "Main verse timestamps must be finite seconds.")
+                info = await asyncio.to_thread(sf.info, track["path"])
+                if index == 0 or not 0 <= value < info.duration:
+                    raise HTTPException(400, "Choose a main verse timestamp within an incoming track.")
+                track["vocal_entry_override"] = float(value)
     return new_job(lambda job_id: make_mix(job_id, tracks, mode))
 
 

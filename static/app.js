@@ -2,7 +2,7 @@
 
 const $ = id => document.getElementById(id);
 const audio = $("audio");
-const state = { files: [], results: { automix: null, plain: null }, mode: "automix", busy: false, transition: 0, playing: false };
+const state = { files: [], restoredId: null, overrides: [], results: { automix: null, plain: null }, mode: "automix", busy: false, transition: 0, playing: false };
 const colors = ["#ee937d", "#7fbbb0", "#b5b3d0", "#dcf87a", "#e7ba7e", "#a1bfd6"];
 const escapeHTML = value => String(value ?? "").replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]));
 const time = seconds => { const value = Math.max(0, Math.floor(Number(seconds) || 0)); return `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`; };
@@ -60,7 +60,9 @@ async function createMix(mode, baseline = false) {
   form.append("mode", mode);
   const source = state.results[mode === "plain" ? "automix" : "plain"];
   if (baseline && source) form.append("source_mix_id", source.id);
+  else if (!state.files.length && state.restoredId) form.append("source_mix_id", state.restoredId);
   else state.files.forEach(file => form.append("files", file));
+  if (!baseline) form.append("vocal_entry_overrides", JSON.stringify(state.overrides));
   const started = await request("/api/mixes", { method: "POST", body: form });
   const job = await waitForJob(started.id, baseline);
   const id = job.result_id || job.mix_id || job.result?.id || started.id;
@@ -71,7 +73,17 @@ async function createMix(mode, baseline = false) {
 
 async function buildSession() {
   if (state.busy) return;
-  if (state.files.length < 2 || state.files.length > 6) return showError("Choose 2–6 MP3, WAV, or FLAC files to build a mix.");
+  const count = state.files.length || (state.results.automix || state.results.plain)?.tracks?.length || 0;
+  if (count < 2 || count > 6) return showError("Choose 2–6 MP3, WAV, or FLAC files to build a mix.");
+  const parsed = [];
+  for (let index = 0; index < count; index++) {
+    const value = state.overrides[index];
+    if (value === "" || value == null) { parsed.push(null); continue; }
+    const match = String(value).trim().match(/^(?:(\d+):([0-5]\d)|\d+)(?:\.(\d+))?$/);
+    if (!match) return showError("Enter a main verse time in seconds or mm:ss, or leave it blank.");
+    parsed.push(match[1] == null ? Number(value) : Number(match[1]) * 60 + Number(match[2]) + (match[3] ? Number(`0.${match[3]}`) : 0));
+  }
+  state.overrides = parsed;
   $("error-banner").hidden = true;
   setBusy(true);
   setProgress({ status: "queued", progress: 0, message: "Preparing your tracks. The first analysis also loads the beat model and can take a few minutes." });
@@ -80,7 +92,8 @@ async function buildSession() {
     audio.pause();
     state.results = { automix: null, plain: null };
     state.mode = "automix";
-    await createMix("automix");
+    const result = await createMix("automix");
+    state.restoredId = result.id;
     setMode("automix", false);
     $("mode-automix").disabled = false;
     await createMix("plain", true);
@@ -99,7 +112,8 @@ function renderQueue() {
     const analysis = analyzed[index];
     const bpm = analysis?.bpm ?? track.bpm;
     const meta = bpm ? `${Math.round(bpm)} BPM` : "Ready to analyze";
-    return `<div class="track-row"><span class="track-number">${String(index + 1).padStart(2, "0")}</span><div class="track-art art-${index % 3}" aria-hidden="true"><span>${String(index + 1).padStart(2, "0")}</span></div><div class="track-info"><h3 title="${escapeHTML(track.title)}">${escapeHTML(track.title)}</h3><p>${escapeHTML(track.artist || "Local audio")}</p></div><div class="track-meta"><span>${time(analysis?.duration || track.duration)}</span><small class="${analysis ? "detected" : ""}">${escapeHTML(meta)}${bpm ? analysis ? " · detected" : "" : ""}</small></div></div>`;
+    const verse = index ? `<label class="verse-field">Main verse starts at <input data-verse-index="${index}" aria-label="Main verse starts at for ${escapeHTML(track.title)}" value="${escapeHTML(state.overrides[index] ?? "")}" placeholder="Auto · mm:ss" autocomplete="off"></label>` : "";
+    return `<div class="track-row"><span class="track-number">${String(index + 1).padStart(2, "0")}</span><div class="track-art art-${index % 3}" aria-hidden="true"><span>${String(index + 1).padStart(2, "0")}</span></div><div class="track-info"><h3 title="${escapeHTML(track.title)}">${escapeHTML(track.title)}</h3><p>${escapeHTML(track.artist || "Local audio")}</p>${verse}</div><div class="track-meta"><span>${time(analysis?.duration || track.duration)}</span><small class="${analysis ? "detected" : ""}">${escapeHTML(meta)}${bpm ? analysis ? " · detected" : "" : ""}</small></div></div>`;
   }).join("") || '<div class="loading-tracks">Add two tracks to start your session.</div>';
 }
 
@@ -110,6 +124,8 @@ function chooseFiles(files) {
   if (selected.some(file => !/\.(mp3|wav|flac)$/i.test(file.name))) return showError("Please use MP3, WAV, or FLAC audio files.");
   if (selected.some(file => file.size > 100 * 1024 * 1024)) return showError("Each audio file must be 100 MB or smaller.");
   state.files = selected;
+  state.restoredId = null;
+  state.overrides = Array(selected.length).fill(null);
   audio.pause();
   state.results = { automix: null, plain: null };
   clearPlayer();
@@ -230,7 +246,11 @@ function drawWave(canvas, waveform, color, options = {}) {
 
 function getTrackAt(position) {
   let index = 0;
-  for (const transition of active()?.transitions || []) if (position >= transition.timeline_start + transition.overlap_seconds / 2) index++;
+  for (const transition of active()?.transitions || []) {
+    const progress = (position - transition.timeline_start) / transition.overlap_seconds;
+    const fadeStart = transition.incoming_fade_start ?? 0;
+    if (Math.sin(Math.max(0, Math.min(1, (progress - fadeStart) / (1 - fadeStart))) * Math.PI / 2) >= Math.cos(Math.max(0, Math.min(1, progress)) * Math.PI / 2)) index++;
+  }
   return index;
 }
 
@@ -241,7 +261,7 @@ function drawAll() {
   const outgoing = result?.tracks[state.transition];
   const incoming = result?.tracks[state.transition + 1];
   drawWave($("out-wave"), outgoing?.waveform, colors[state.transition % colors.length], transition ? { highlight: [transition.outgoing_start / outgoing.duration, transition.outgoing_end / outgoing.duration], marker: transition.outgoing_start / outgoing.duration } : {});
-  drawWave($("in-wave"), incoming?.waveform, colors[(state.transition + 1) % colors.length], transition ? { highlight: [transition.incoming_cue / incoming.duration, (transition.incoming_cue + transition.overlap_seconds) / incoming.duration], marker: transition.incoming_cue / incoming.duration } : {});
+  drawWave($("in-wave"), incoming?.waveform, colors[(state.transition + 1) % colors.length], transition ? { highlight: [transition.incoming_cue / incoming.duration, (transition.incoming_cue + Math.max(0, transition.overlap_seconds - (transition.incoming_delay_seconds || 0)) * transition.incoming_playback_rate) / incoming.duration], marker: (transition.vocal_entry ?? transition.incoming_cue) / incoming.duration } : {});
 }
 
 function renderInspector() {
@@ -264,7 +284,8 @@ function renderInspector() {
   const skipped = transition.discarded_music_seconds == null ? "" : ` · ${Number(transition.discarded_music_seconds).toFixed(1)}s audible music skipped`;
   const exit = transition.mix_out_type === "full_track_end" ? "Plain fade at file end" : `${transition.mix_out_type === "sustained_outro_drop" ? "Outro" : "End-region"} exit at ${Number(transition.outgoing_end).toFixed(1)}s${skipped}`;
   const reverb = Number(transition.reverb_wet) ? `Stereo reverb ${Math.round(Number(transition.reverb_wet) * 100)}% · ${Number(transition.reverb_tail_seconds).toFixed(1)}s tail` : "No added reverb";
-  $("inspector-detail").textContent = `${exit} · ${reverb} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
+  const entry = transition.vocal_entry == null ? "No sustained vocal entry found" : `Main verse ${Number(transition.vocal_entry).toFixed(1)}s (${transition.vocal_entry_source}) · heard ${Number(transition.incoming_vocal_at).toFixed(1)}s into handoff`;
+  $("inspector-detail").textContent = `${entry} · ${exit} · ${reverb} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
   drawAll();
 }
 
@@ -277,7 +298,8 @@ function updatePlayback() {
   const transition = result?.transitions[state.transition];
   const progress = transition ? Math.max(0, Math.min(1, (position - transition.timeline_start) / transition.overlap_seconds)) : 0;
   $("out-gain").style.width = `${Math.cos(progress * Math.PI / 2) * 100}%`;
-  $("in-gain").style.width = `${Math.sin(progress * Math.PI / 2) * 100}%`;
+  const fadeStart = transition?.incoming_fade_start ?? 0;
+  $("in-gain").style.width = `${Math.sin(Math.max(0, (progress - fadeStart) / (1 - fadeStart)) * Math.PI / 2) * 100}%`;
   if (!audio.paused) requestAnimationFrame(updatePlayback);
 }
 
@@ -299,7 +321,8 @@ function showDialog(title, content) { $("dialog-title").textContent = title; $("
 $("build-upload").onclick = () => buildSession();
 ["hero-upload", "queue-upload", "browse-files"].forEach(id => $(id).onclick = () => $("file-input").click());
 $("file-input").onchange = event => chooseFiles(event.target.files);
-$("reset-queue").onclick = () => { state.files = []; state.results = { automix: null, plain: null }; $("queue-actions").hidden = true; $("file-input").value = ""; clearPlayer(); renderQueue(); };
+$("reset-queue").onclick = () => { state.files = []; state.restoredId = null; state.overrides = []; state.results = { automix: null, plain: null }; $("queue-actions").hidden = true; $("file-input").value = ""; clearPlayer(); renderQueue(); };
+$("track-list").addEventListener("input", event => { if (event.target.matches("[data-verse-index]")) state.overrides[Number(event.target.dataset.verseIndex)] = event.target.value; });
 $("mode-automix").onclick = () => { if (state.mode !== "automix") setMode("automix"); };
 $("mode-plain").onclick = () => { if (state.mode !== "plain") setMode("plain"); };
 $("play").onclick = () => audio.paused ? playAudio() : audio.pause();
@@ -329,6 +352,10 @@ async function init() {
   if (loaded) {
     const latest = loaded;
     state.results.automix = latest.automix || null; state.results.plain = latest.plain || null;
+    const restored = state.results.automix || state.results.plain;
+    state.restoredId = restored?.id || null;
+    state.overrides = restored?.tracks?.map(track => track.vocal_entry_override ?? null) || [];
+    $("queue-actions").hidden = !restored;
     if (state.results.automix || state.results.plain) setMode(state.results.automix ? "automix" : "plain", false);
   }
   renderQueue();

@@ -120,8 +120,8 @@ class EngineTests(unittest.TestCase):
 
     def test_vocal_overlap_is_simultaneous_not_mean(self):
         a, b = analysis(), analysis()
-        a["vocal"][0:4] = [1.] * 4
-        b["vocal"][0:4] = [1.] * 4
+        a["vocal"][4:8] = [1.] * 4
+        b["vocal"][4:8] = [1.] * 4
         self.assertAlmostEqual(engine._clash(a, b, 0, 0, 4, 1), .25)
         self.assertEqual(engine._clash(a, b, 1, 0, 4, 1), 0)
 
@@ -138,7 +138,7 @@ class EngineTests(unittest.TestCase):
         a["vocal"] = b["vocal"] = [1.] * len(a["vocal"])
         unavoidable = engine.plan_transition(a, b)
         self.assertEqual(unavoidable["vocal_evidence"], "model")
-        self.assertEqual(unavoidable["vocal_duck_db"], 6)
+        self.assertGreater(unavoidable["vocal_duck_db"], 2)
         a["vocal_source"] = b["vocal_source"] = "DSP heuristic fallback"
         fallback = engine.plan_transition(a, b)
         self.assertEqual(fallback["vocal_evidence"], "heuristic")
@@ -196,8 +196,8 @@ class EngineTests(unittest.TestCase):
         silence = np.zeros((len(t), 2), np.float32)
         plan = {"tier": "safe-crossfade", "overlap_seconds": 2,
                 "bass_handoff_seconds": .8, "vocal_duck_db": 0}
-        early = slice(round(.2 * len(t)), round(.3 * len(t)))
-        before_middle = slice(round(.45 * len(t)), round(.49 * len(t)))
+        early = slice(round(.3 * len(t)), round(.36 * len(t)))
+        before_entry = slice(round(.2 * len(t)), round(.24 * len(t)))
         late = slice(round(.7 * len(t)), round(.8 * len(t)))
 
         def level(frequency, outgoing, window):
@@ -208,14 +208,13 @@ class EngineTests(unittest.TestCase):
 
         # Song 1 has already begun fading and strongly loses highs at transition start.
         self.assertLess(level(4000, True, early), level(100, True, early) * .45)
-        # Song 2 is silent through the first half and begins only after the midpoint.
-        self.assertLess(level(100, False, early), 1e-5)
-        self.assertLess(level(100, False, before_middle), 1e-5)
+        # Song 2 is silent until 25%, then rises through its opening filter.
+        self.assertLess(level(100, False, before_entry), 1e-5)
+        self.assertGreater(level(100, False, early), .02)
         self.assertGreater(level(100, False, late), .15)
-        # Song 2 enters muffled, then its low-pass opens as it rises.
-        self.assertLess(level(4000, False, late), level(100, False, late) * .8)
+        self.assertLess(level(10000, False, early), level(100, False, early) * .25)
         end = slice(round(.93 * len(t)), round(.98 * len(t)))
-        self.assertGreater(level(4000, False, end), level(100, False, end) * .7)
+        self.assertGreater(level(10000, False, end), level(100, False, end) * .7)
 
     def test_vocal_duck_is_audible_signal_processing(self):
         t = np.arange(4410) / engine.SR
@@ -228,12 +227,12 @@ class EngineTests(unittest.TestCase):
         self.assertLess(float(np.sqrt(np.mean(ducked[middle] ** 2))),
                         float(np.sqrt(np.mean(plain[middle] ** 2))) * .85)
 
-    def test_reverb_has_real_stereo_tail_after_outgoing_stops(self):
+    def test_reverb_is_stereo_and_clears_before_vocals(self):
         outgoing = np.zeros((engine.SR * 4, 2), np.float32)
-        outgoing[-engine.SR // 2:] = .2 * np.sin(2 * np.pi * 440 * np.arange(engine.SR // 2) / engine.SR)[:, None]
-        room = engine._reverb_send(outgoing, .2)
-        self.assertGreater(float(np.sqrt(np.mean(room[len(outgoing):len(outgoing) + engine.SR // 2] ** 2))), .001)
-        self.assertLess(float(np.sqrt(np.mean(room[-engine.SR // 4:] ** 2))), .001)
+        outgoing[:engine.SR * 2] = .2 * np.sin(2 * np.pi * 440 * np.arange(engine.SR * 2) / engine.SR)[:, None]
+        room = engine._reverb_send(outgoing, .1, 2.75)
+        self.assertGreater(float(np.sqrt(np.mean(room[engine.SR:engine.SR * 2] ** 2))), .001)
+        self.assertEqual(float(np.max(np.abs(room[round(2.75 * engine.SR):]))), 0)
         self.assertGreater(float(np.mean(np.abs(room[:, 0] - room[:, 1]))), 1e-4)
 
     def test_render_carries_outro_reverb_into_next_track(self):
@@ -252,15 +251,34 @@ class EngineTests(unittest.TestCase):
             with patch.object(engine, "analyze", side_effect=[a, b]):
                 result = engine.render_mix(tracks, "automix", root / "wet", root / "cache")
             with patch.object(engine, "analyze", side_effect=[a, b]), \
-                    patch.object(engine, "_reverb_send", side_effect=lambda samples, wet:
+                    patch.object(engine, "_reverb_send", side_effect=lambda samples, wet, clear_at:
                                  np.zeros((len(samples) + len(engine._reverb_ir()) - 1, 2), np.float32)):
                 engine.render_mix(tracks, "automix", root / "dry", root / "cache")
             wet, _ = sf.read(root / "wet" / "mix.wav", dtype="float32")
             dry, _ = sf.read(root / "dry" / "mix.wav", dtype="float32")
-            end = round(result["transitions"][0]["timeline_end"] * engine.SR)
-            self.assertGreater(float(np.sqrt(np.mean((wet[end:end + engine.SR // 2] -
-                                                       dry[end:end + engine.SR // 2]) ** 2))), .001)
-            self.assertEqual(result["transitions"][0]["reverb_wet"], .2)
+            start = round(result["transitions"][0]["timeline_start"] * engine.SR)
+            self.assertGreater(float(np.sqrt(np.mean((wet[start + engine.SR:start + 2 * engine.SR] -
+                                                       dry[start + engine.SR:start + 2 * engine.SR]) ** 2))), .001)
+            self.assertEqual(result["transitions"][0]["reverb_wet"], .1)
+
+    def test_main_verse_skips_tag_and_arrives_inside_handoff(self):
+        a, b = analysis(120), analysis(120)
+        b["vocal"][4:8] = [1.] * 4
+        b["vocal"][60:84] = [1.] * 24
+        phrase = engine.plan_transition(a, b)
+        self.assertAlmostEqual(phrase["vocal_entry"], 15, delta=.25)
+        self.assertEqual(phrase["vocal_entry_source"], "automatic")
+        self.assertAlmostEqual(phrase["incoming_vocal_at"], phrase["overlap_seconds"] * .75, delta=.5)
+        self.assertGreater(phrase["incoming_cue"], 5)
+        immediate = analysis(120)
+        immediate["vocal"][:20] = [1.] * 20
+        padded = engine.plan_transition(a, immediate)
+        self.assertGreater(padded["incoming_delay_seconds"], 0)
+        self.assertAlmostEqual(padded["incoming_vocal_at"], padded["overlap_seconds"] * .75, delta=.5)
+        manual = engine.plan_transition(a, b, vocal_entry_override=50)
+        self.assertEqual((manual["vocal_entry"], manual["vocal_entry_source"]), (50, "manual"))
+        b["vocal_source"] = "DSP heuristic fallback"
+        self.assertEqual(engine.plan_transition(a, b)["vocal_entry_source"], "fallback")
 
     def test_decode_silence_boundaries_and_cache(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -321,6 +339,7 @@ class EngineTests(unittest.TestCase):
                 sf.write(path, audio, engine.SR)
                 tracks.append({"id": str(i), "title": str(i), "path": path})
             data = [analysis(48, bpm=120), analysis(48, bpm=118), analysis(48, bpm=120)]
+            data[1]["vocal"][:20] = [1.] * 20
             with patch.object(engine, "analyze", side_effect=data):
                 result = engine.render_mix(tracks, "automix", root / "out", root / "cache")
             output, sr = sf.read(root / "out" / "mix.wav")
@@ -329,6 +348,7 @@ class EngineTests(unittest.TestCase):
             self.assertTrue(np.isfinite(output).all())
             self.assertLessEqual(float(np.max(np.abs(output))), 10 ** (-1 / 20) + 2e-7)
             first, second = result["transitions"]
+            self.assertGreater(first["incoming_delay_seconds"], 0)
             expected_start = (first["timeline_start"] + first["output_resume"] +
                               second["outgoing_start"] - first["incoming_cue"] - first["source_resume"])
             self.assertAlmostEqual(second["timeline_start"], expected_start, delta=2 / sr)

@@ -90,20 +90,23 @@ def activity_curve(audio: np.ndarray, model_dir: Path, points: int, progress=Non
     path = ensure_model(model_dir)
     session, input_name, output_name = _session(str(path))
     duration = len(audio) / SR
-    # ponytail: only transition-relevant head/tail; add chunked full-track inference if cue search expands.
-    windows = [(0.0, duration)] if duration <= 60 else [(0.0, 30.0), (duration - 30.0, duration)]
+    windows = [(0.0, duration)] if duration <= 75 else [(0.0, 45.0), (duration - 30.0, duration)]
     times = np.arange(points, dtype=np.float32) / 4
     result = np.full(points, .5, dtype=np.float32)
     for index, (start, end) in enumerate(windows):
         if progress:
             progress(f"UMX-HQ analyzing {'full track' if len(windows) == 1 else ('head' if index == 0 else 'tail')}")
-        chunk = audio[round(start * SR):round(end * SR)]
-        magnitude = _magnitude(chunk)
-        estimate = session.run([output_name], {input_name: magnitude})[0]
-        if estimate.shape != magnitude.shape or not np.isfinite(estimate).all():
-            raise ValueError("UMX-HQ returned invalid output")
-        activity = _reduce_activity(magnitude, estimate)
-        frame_times = start + np.arange(len(activity)) * HOP / SR
-        selected = (times >= start) & (times <= end)
-        result[selected] = np.interp(times[selected], frame_times, activity)
+        for core_start in np.arange(start, end, 30.0):
+            core_end = min(end, core_start + 30.0)
+            # Context on both sides prevents an artificial vocal boundary at 30 seconds.
+            chunk_start, chunk_end = max(0.0, core_start - 2.0), min(duration, core_end + 2.0)
+            chunk = audio[round(chunk_start * SR):round(chunk_end * SR)]
+            magnitude = _magnitude(chunk)
+            estimate = session.run([output_name], {input_name: magnitude})[0]
+            if estimate.shape != magnitude.shape or not np.isfinite(estimate).all():
+                raise ValueError("UMX-HQ returned invalid output")
+            activity = _reduce_activity(magnitude, estimate)
+            frame_times = chunk_start + np.arange(len(activity)) * HOP / SR
+            selected = (times >= core_start) & (times < core_end if core_end < end else times <= core_end)
+            result[selected] = np.interp(times[selected], frame_times, activity)
     return result.tolist(), [[round(a, 3), round(b, 3)] for a, b in windows], "UMX-HQ ONNX", None

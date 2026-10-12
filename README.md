@@ -26,6 +26,7 @@ docker compose stop
 2. Build **AutoMix**. The UI polls a background job while analysis, planning, and rendering run.
 3. Switch to **Plain crossfade** to compare the same queue without the AutoMix decisions.
 4. Use **Hear transition** to audition a handoff from four seconds before its start.
+5. If the detected entry misses Song 2's verse, enter its **Main verse starts at** time in seconds or `mm:ss` in the queue and rebuild. The correction is saved with the session's source list.
 5. Inspect or download the WAV and **Mix plan**.
 
 Uploads must be mono/stereo, 2 seconds–10 minutes, 8–192 kHz, and at most 100 MB per file. The server binds only to loopback.
@@ -44,7 +45,7 @@ flowchart LR
   RESULT --> UI
 ```
 
-There is one render worker and at most three pending jobs. That is deliberate for a local workbench: full-song beat and vocal analysis should not saturate a laptop with several concurrent queues.
+There is one render worker and at most three pending jobs. That keeps the head/tail model passes and full-track energy analysis from saturating a laptop with several concurrent queues.
 
 ## How a transition is made
 
@@ -82,23 +83,23 @@ Outside a transition and its possible reverb tail, the output uses the original 
 | Audible bounds | Energy above a floor derived from the track itself | Avoids treating silence as music |
 | Outro candidates | Final energy drop that does not recover to a strong section | Finds a plausible early exit |
 | Beat grid | Beat This! small0: beats, downbeats, BPM, confidence | Alignment and limited tempo correction |
-| Vocal activity | UMX-HQ source separation in first/last 30 seconds | Avoids vocal collisions and protects late singing |
+| Vocal activity | UMX-HQ source separation in the first 45 seconds and last 30 seconds, in overlapping chunks | Finds the incoming sustained phrase and protects late singing |
 | Heuristic fallback | Voice-band spectral activity | Cue ranking only when model inference is unavailable |
 
 The model is intentionally conservative: an unscanned middle section is **unknown**, not assumed vocal-free. If the vocal model cannot run, the plan labels the fallback and a later run retries the real model instead of caching failure permanently.
 
 ### 3. Choose exit and entry together
 
-`engine.plan_transition(a, b, mode)` scores a **pair** of cues. It does not separately pick “the best ending” and “the best beginning,” because a good cue in isolation can still create two simultaneous vocal lines.
+`engine.plan_transition(a, b, mode)` pairs an outgoing exit with an incoming entry. It uses the first sustained model-detected phrase in Song 2's first 45 seconds, or a user-supplied verse timestamp. Brief isolated opening vocal tags are skipped; a long ad-lib can still look like a verse, so the timestamp field is the correction mechanism.
 
 ```mermaid
 flowchart TD
   S[Adjacent analyzed tracks] --> O[Find outgoing content end or outro drop]
   O --> G{Would an early exit cut a<br/>later active vocal phrase?}
   G -->|yes| KEEP[Keep later audio / content end]
-  G -->|no| IN[Collect early incoming downbeats]
+  G -->|no| IN[Find first sustained incoming vocal phrase]
   KEEP --> IN
-  IN --> SCORE[Score cue pairs for vocal collision and energy]
+  IN --> SCORE[Place phrase at 75% of overlap; align nearby measured downbeat]
   SCORE --> LEN[Apply overlap policy]
   LEN --> OUT[Plan plus human-readable reasons]
 ```
@@ -113,7 +114,7 @@ flowchart TD
 
 #### Incoming cue policy
 
-For beat-aware plans, the engine considers downbeats near the audible beginning of Song 2 (the first 12 seconds). It favors a cue with an energy rise and less vocal activity through the proposed overlap. That is how it can choose an instrumental/downbeat entry instead of blindly starting from sample zero.
+The detector joins vocal gaps of at most 0.75 seconds and requires three seconds of active vocals within a five-second region. It backtracks to quieter opening syllables. A detected verse or a manual timestamp is targeted near 75% of the overlap. If the required source cue would be before the file starts, the renderer delays Song 2 instead of cutting its opening vocal. It uses a measured downbeat only when that keeps the target within 0.5 seconds. If no phrase is found, the earlier conservative energy/downbeat cue remains and the inspector says so.
 
 Weak BPM, missing downbeats, unusual tempo, or short material selects a safe crossfade. The engine does not claim beat precision it cannot support.
 
@@ -136,27 +137,29 @@ sequenceDiagram
   A->>M: Full level at overlap start
   Note over A,M: Song 1 fades immediately;
   Note over A,M: low-pass closes 5 kHz to 250 Hz
-  Note over M,B: First half: Song 2 gain is zero
-  B->>M: Second half: Song 2 fades in
+  Note over M,B: First quarter: Song 2 gain is zero
+  B->>M: From 25%: Song 2 fades in
+  Note over M,B: Main verse enters near 75%
   Note over M,B: Incoming low-pass opens to full tone
   M->>B: Continue Song 2 at native tempo
 ```
 
 ```text
-overlap progress       0%                 50%                 100%
+overlap progress       0%       25%       50%       75%       100%
 Song 1 gain            full ────────╲────────────────────────── 0
 Song 1 tone            dry → low-pass closing to 250 Hz
-Song 2 gain             0 ─────────── 0 ────────────────╱──── full
-Song 2 tone            silent          low-pass entry → full tone
+Song 2 gain             0 ──────╱──────────────────────────── full
+Song 2 tone            silent   5 kHz low-pass → full tone
+Song 2 voice           selected sustained phrase near 75%
 ```
 
 For eligible AutoMix tiers:
 
 - Song 1 uses an equal-power fade from the first overlap sample. Its low-pass closes from 5 kHz to 250 Hz; a 150 ms dry-to-filter ramp avoids a hard timbre jump.
-- Song 2 is silent for the first half. In the second half it rises under a low-pass, entering around 1.4 kHz at midpoint and opening to full tone by the end.
+- Song 2 is silent for the first quarter, then rises under a 5 kHz low-pass that opens to full tone by the end.
 - Beatmatched/DJ-assisted plans exchange low frequencies around a planned bass handoff.
 - Unavoidable model-detected vocal collision can apply complementary vocal-band ducking, capped at 6 dB.
-- A safe, beat-supported structural outro may add a 20%-wet stereo convolution reverb tail. Reverb is separate from the filter sweeps.
+- An eligible structural outro may add a 10%-wet, 0.7-second stereo room response earlier in the overlap. Its return is gone before the selected incoming vocals.
 - WSOLA is used only for an eligible small tempo adjustment, then ramps back to native tempo after the overlap.
 - One global attenuation pass limits the final output to **−1 dBFS sample peak**.
 
@@ -195,7 +198,12 @@ A transition entry contains values such as:
   "mix_out_type": "sustained_outro_drop",
   "vocal_evidence": "model",
   "vocal_duck_db": 2.5,
-  "reverb_wet": 0.2,
+  "reverb_wet": 0.1,
+  "vocal_entry": 17.25,
+  "vocal_entry_source": "automatic",
+  "incoming_delay_seconds": 0,
+  "incoming_vocal_at": 5.25,
+  "incoming_fade_start": 0.25,
   "reasons": ["human-readable planning evidence"]
 }
 ```
@@ -237,7 +245,7 @@ AutoMix-Lab/
 | Route | Purpose |
 | --- | --- |
 | `GET /api/health` | Health check |
-| `POST /api/mixes` | Submit uploads or saved sources for rendering |
+| `POST /api/mixes` | Submit uploads or saved sources; optional `vocal_entry_overrides` is a JSON array of seconds or `null`, one per track |
 | `GET /api/jobs/{id}` | Poll job progress |
 | `GET /api/mixes/{id}` | Read a completed result |
 | `GET /api/mixes/{id}/audio` | Stream WAV with range support |
@@ -253,7 +261,7 @@ docker compose run --rm automix python -m unittest discover -s tests -q
 node --check static/app.js
 ```
 
-Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 7 second floor, no incoming signal before midpoint, filter sweeps, vocal collision policy, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
+Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 7 second floor, no incoming signal before 25%, filter sweeps, vocal collision policy, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
 
 When improving the transition engine:
 

@@ -14,7 +14,7 @@ import soundfile as sf
 from scipy import signal
 
 SR = 44100
-VERSION = "analysis-7-vocal-outro-3d05709f"
+VERSION = "analysis-8-vocal-entry-45s"
 VOCAL_ACTIVE = .35
 MAX_DISCARDED_MUSIC_SECONDS = 12.0
 MIN_AUTOMIX_OVERLAP_SECONDS = 7.0
@@ -89,12 +89,20 @@ def _beats(audio: np.ndarray, progress=None) -> dict:
     from beat_this.inference import Audio2Frames
     model = _model()
     duration = len(audio) / SR
-    starts = [0.0] if duration <= 35 else [0.0, max(30.0, duration - 30.0)]
+    starts = [0.0]
+    if duration > 45:
+        starts.append(30.0)
+    if duration > 75:
+        starts.append(duration - 30.0)
+    elif duration > 60:
+        starts.append(max(30.0, duration - 30.0))
+    starts = sorted(set(starts))
     beats, downbeats, confidences, intervals, local_tempos = [], [], [], [], []
     for i, start in enumerate(starts):
         if progress:
             progress(f"Beat This! analyzing {'head' if i == 0 else 'tail'}")
-        chunk = audio[round(start * SR):round(min(duration, start + 35 if len(starts) == 1 else start + 30) * SR)]
+        chunk_end = min(duration, start + (duration if duration <= 45 else 15 if start == 30 and duration > 75 else 30))
+        chunk = audio[round(start * SR):round(chunk_end * SR)]
         logits, down_logits = Audio2Frames.__call__(model, chunk, SR)
         beat, downbeat = model.frames2beats(logits, down_logits)
         beat = np.asarray(beat)
@@ -213,10 +221,11 @@ def _activity(analysis: dict, times: np.ndarray) -> np.ndarray:
     return np.where(_covered(analysis, times), activity, 0.0)
 
 
-def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: float) -> float:
+def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: float, delay: float = 0) -> float:
     times = np.arange(0, max(.25, duration), .25)
-    return float(np.mean((_activity(a, start + times) >= VOCAL_ACTIVE) &
-                         (_activity(b, cue + times * rate) >= VOCAL_ACTIVE)))
+    audible = times >= max(.25 * duration, delay)
+    return float(np.mean(audible & (_activity(a, start + times) >= VOCAL_ACTIVE) &
+                         (_activity(b, cue + np.maximum(0, times - delay) * rate) >= VOCAL_ACTIVE)))
 
 
 def _model_pair_covered(a: dict, b: dict, start: float, cue: float, duration: float, rate: float) -> bool:
@@ -241,7 +250,36 @@ def _safe_outro_exit(a: dict, end: float) -> bool:
     return True
 
 
-def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
+def _first_vocal_phrase(analysis: dict) -> float | None:
+    if not _model_vocals(analysis):
+        return None
+    limit = min(45.0, analysis["duration"])
+    times = np.arange(0, limit, .25)
+    if not _covered(analysis, times).all():
+        return None
+    strength = _activity(analysis, times)
+    active = np.flatnonzero(strength >= VOCAL_ACTIVE)
+    if not len(active):
+        return None
+    groups = np.split(active, np.flatnonzero(np.diff(active) > 3) + 1)
+    for group in groups:
+        if len(group) < 12:
+            continue
+        if max(np.count_nonzero((group >= t) & (group < t + 20)) for t in group) < 12:
+            continue
+        onset = int(group[0])
+        while onset and onset - group[0] >= -4 and strength[onset - 1] >= .18:
+            onset -= 1
+        return onset / 4
+    return None
+
+
+def _vocal_entry_timing(vocal_entry: float, cue: float, overlap: float, rate: float) -> tuple[float, float]:
+    delay = max(0.0, .75 * overlap - (vocal_entry - cue) / rate)
+    return delay, delay + (vocal_entry - cue) / rate
+
+
+def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_override: float | None = None) -> dict:
     plain = mode == "plain"
     ca, cb = a["beat_confidence"], b["beat_confidence"]
     bpm_a, bpm_b = a["bpm"], b["bpm"]
@@ -249,6 +287,8 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     ratios = [bpm_a / (bpm_b * factor) for factor in (.5, 1, 2)] if bpm_a and bpm_b else [1.0]
     ratio = min(ratios, key=lambda value: abs(value - 1))
     reasons = []
+    vocal_entry = None if plain else (vocal_entry_override if vocal_entry_override is not None else _first_vocal_phrase(b))
+    entry_source = "manual" if vocal_entry_override is not None and not plain else "automatic" if vocal_entry is not None else "fallback"
     has_structural_cues = bool(a.get("downbeats") and b.get("downbeats"))
     if plain:
         tier, rate = "plain-crossfade", 1.0
@@ -263,7 +303,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
         tier, rate = "dj-assisted", 1.0
         reasons.append("Tempo distance or beat confidence prevents stretching; structural cues and EQ remain available.")
     if not plain:
-        reasons.append("Song 1 fades under a 5 kHz-to-250 Hz low-pass; Song 2 waits until halfway, then rises through a 1.4 kHz low-pass that opens to full tone.")
+        reasons.append("Song 1 fades under a 5 kHz-to-250 Hz low-pass; Song 2 rises from 25% through a 5 kHz low-pass opening to full tone.")
     for item in (a, b):
         if item.get("beat_warning"):
             reasons.append(item["beat_warning"])
@@ -311,7 +351,10 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
         pairs = [(start, cue) for start in starts for cue in incoming]
         covered_pairs = [pair for pair in pairs
                          if _model_pair_covered(a, b, pair[0], pair[1], overlap, rate)]
-        if covered_pairs:
+        if vocal_entry is not None:
+            start = max(starts)
+            reasons.append("Outgoing measured beat selected while the incoming cue follows the sustained vocal phrase.")
+        elif covered_pairs:
             start, cue = min(covered_pairs,
                              key=lambda pair: (_clash(a, b, pair[0], pair[1], overlap, rate),
                                                -entry_score(pair[1]), -pair[0]))
@@ -324,6 +367,13 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             reasons.append("Outgoing overlap begins on a measured downbeat near the audible ending.")
     if outro:
         reasons.append("Sustained late-song energy drop; overlap carries the outro until the remaining tail is safe to skip.")
+    if vocal_entry is not None:
+        target_cue = max(0.0, vocal_entry - .75 * overlap * rate)
+        measured = [t for t in b.get("downbeats", []) if t <= vocal_entry and abs(t - target_cue) <= .5]
+        cue = min(measured, key=lambda t: abs(t - target_cue)) if measured else target_cue
+        reasons.append(f"{entry_source.capitalize()} sustained vocal phrase at {vocal_entry:.1f}s is placed near 75% of the handoff.")
+    elif not plain:
+        reasons.append("No sustained vocal phrase detected in first 45 seconds; using a conservative entry.")
     outgoing_span = end if plain else max(1 / SR, end - a["audible_start"])
     incoming_end = b["duration"] if plain else b["content_end"]
     available = min(outgoing_span, max(1 / SR, (incoming_end - cue) / max(rate, 1e-6)))
@@ -336,13 +386,22 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
             not any(abs(t - cue) <= .125 for t in b.get("downbeats", []))):
         tier, rate = "safe-crossfade", 1.0
         reasons.append("Selected cue pair lacks measured downbeats; tempo stretching and beat effects are disabled.")
-    clash = _clash(a, b, start, cue, overlap, rate)
+    if vocal_entry is not None:
+        target_cue = max(0.0, vocal_entry - .75 * overlap * rate)
+        measured = [t for t in b.get("downbeats", []) if t <= vocal_entry and abs(t - target_cue) <= .5]
+        cue = min(measured, key=lambda t: abs(t - target_cue)) if measured else target_cue
+        if tier in ("beatmatched", "dj-assisted") and not measured:
+            tier, rate = "safe-crossfade", 1.0
+            cue = max(0.0, vocal_entry - .75 * overlap)
+            reasons.append("Vocal entry has no nearby measured downbeat; tempo stretching is disabled.")
+    delay, entry_at = _vocal_entry_timing(vocal_entry, cue, overlap, rate) if vocal_entry is not None else (0.0, None)
+    clash = _clash(a, b, start, cue, overlap, rate, delay)
     vocal_evidence = ("model" if _model_pair_covered(a, b, start, cue, overlap, rate) else
                       "heuristic" if "heuristic" in (a.get("vocal_source", "") + b.get("vocal_source", "")).lower()
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:
         reduced = max(MIN_AUTOMIX_OVERLAP_SECONDS, overlap / 2)
-        if (reduced < overlap and (not outro or start + reduced >= outro["time"] - .5) and
+        if (vocal_entry is None and reduced < overlap and (not outro or start + reduced >= outro["time"] - .5) and
                 _safe_outro_exit(a, start + reduced)):
             alternative = _clash(a, b, start, cue, reduced, rate)
             if alternative < clash:
@@ -357,17 +416,22 @@ def plan_transition(a: dict, b: dict, mode: str = "automix") -> dict:
     if nearby:
         bass = min(nearby, key=lambda t: abs(t - bass))
     discarded_music = _audible_seconds(a.get("energy", []), end, a["content_end"]) if not plain else 0.0
-    reverb_wet = .2 if outro and tier in ("beatmatched", "dj-assisted") else 0.0
+    reverb_wet = .1 if outro and (tier in ("beatmatched", "dj-assisted") or
+                                 (vocal_entry is not None and ca >= .15 and cb >= .15 and
+                                  any(abs(t - start) <= .125 for t in a.get("downbeats", [])))) else 0.0
     if reverb_wet:
         reasons.append("A short stereo room tail carries the outgoing outro beneath the new track.")
     return {"tier": tier, "outgoing_start": start, "outgoing_end": end, "incoming_cue": cue,
             "mix_out_type": outro["type"] if outro else ("full_track_end" if plain else "content_end"),
             "mix_out_anchor": outro["time"] if outro else end,
             "discarded_music_seconds": round(discarded_music, 2), "reverb_wet": reverb_wet,
-            "reverb_tail_seconds": 1.4 if reverb_wet else 0.0,
+            "reverb_tail_seconds": .7 if reverb_wet else 0.0,
             "overlap_seconds": overlap, "overlap_beats": overlap * bpm_a / 60 if bpm_a else 0,
             "incoming_playback_rate": rate, "bass_handoff_seconds": bass, "vocal_overlap": clash,
             "vocal_duck_db": round(vocal_duck_db, 2), "vocal_evidence": vocal_evidence,
+            "vocal_entry": vocal_entry, "vocal_entry_source": entry_source,
+            "incoming_delay_seconds": delay, "incoming_vocal_at": entry_at,
+            "incoming_fade_start": .25 if not plain else 0.0,
             "confidence": min(ca, cb), "reasons": reasons}
 
 
@@ -431,10 +495,12 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
         # ponytail: 150 ms ramps avoid hard timbre jumps; add an adjustable curve only if listening tests need it.
         seconds = plan.get("overlap_seconds", n / SR)
         out_wet = np.clip(x * seconds / .15, 0, 1)
-        entry = np.clip(2 * x - 1, 0, 1)
-        in_wet = 1 - entry
+        entry = np.clip((x - .25) / .75, 0, 1)
         outgoing = outgoing * (1 - out_wet) + _filter_sweep(outgoing, [5000, 2000, 700, 250], "lowpass") * out_wet
-        incoming = incoming * (1 - in_wet) + _filter_sweep(incoming, [250, 1000, 1800, 18000], "lowpass") * in_wet
+        entry_sample = min(n - 1, round(n * .25))
+        filtered = _filter_sweep(incoming[entry_sample:], [5000, 8500, 13000, 18000], "lowpass")
+        incoming = incoming.copy()
+        incoming[entry_sample:] = filtered * (1 - entry[entry_sample:]) + incoming[entry_sample:] * entry[entry_sample:]
     if plan["tier"] in ("beatmatched", "dj-assisted"):
         low = signal.butter(2, 200, fs=SR, output="sos")
         a_low = signal.sosfilt(low, outgoing, axis=0).astype(np.float32)
@@ -457,25 +523,31 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
 
 @lru_cache(maxsize=1)
 def _reverb_ir() -> np.ndarray:
-    """Deterministic stereo room response: 30 ms pre-delay, 1.4 s decay."""
+    """Deterministic stereo room response: 30 ms pre-delay, 0.7 s decay."""
     rng = np.random.default_rng(3127)
-    tail = round(1.4 * SR)
+    tail = round(.7 * SR)
     noise = rng.standard_normal((tail, 2)).astype(np.float32)
     band = signal.butter(2, [180, 6500], btype="bandpass", fs=SR, output="sos")
     noise = signal.sosfilt(band, noise, axis=0).astype(np.float32)
-    noise *= np.exp(-np.arange(tail, dtype=np.float32)[:, None] / (.28 * SR))
+    noise *= np.exp(-np.arange(tail, dtype=np.float32)[:, None] / (.18 * SR))
     noise /= np.sqrt(np.sum(noise * noise, axis=0, keepdims=True))
     return np.pad(noise, ((round(.03 * SR), 0), (0, 0)))
 
 
-def _reverb_send(outgoing: np.ndarray, wet: float) -> np.ndarray:
-    """Carry the outgoing room tail through its handoff into the new track."""
-    n = min(len(outgoing), round(1.2 * SR))
-    source = outgoing[-n:].copy()
-    source *= np.linspace(0, 1, n, dtype=np.float32)[:, None]
+def _reverb_send(outgoing: np.ndarray, wet: float, clear_at: float | None = None) -> np.ndarray:
+    """Put a quiet room under the handoff, clearing it before incoming vocals."""
+    length = len(outgoing)
+    n = min(length, round(length * .55))
+    source = outgoing[:n].copy()
+    source *= np.clip(np.arange(n, dtype=np.float32)[:, None] / max(1, .15 * SR), 0, 1)
     rendered = signal.fftconvolve(source, _reverb_ir(), mode="full", axes=0).astype(np.float32)
-    result = np.zeros((len(outgoing) + len(_reverb_ir()) - 1, 2), np.float32)
-    result[len(outgoing) - n:] = rendered * wet
+    result = np.zeros((length + len(_reverb_ir()) - 1, 2), np.float32)
+    result[:len(rendered)] = rendered * wet
+    stop = min(length, round((clear_at if clear_at is not None else length / SR) * SR))
+    fade = min(round(.35 * SR), stop)
+    if fade:
+        result[stop - fade:stop] *= np.linspace(1, 0, fade, dtype=np.float32)[:, None]
+    result[stop:] = 0
     return result
 
 
@@ -497,7 +569,7 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
     track_details[0].update(timeline_start=0.0, incoming_cue=0.0, source_resume=0.0, output_resume=0.0)
     for i in range(len(tracks) - 1):
         notify("rendering", 55 + int(i / (len(tracks) - 1) * 35), f"Rendering transition {i + 1} of {len(tracks) - 1}")
-        plan = plan_transition(analyses[i], analyses[i + 1], mode)
+        plan = plan_transition(analyses[i], analyses[i + 1], mode, tracks[i + 1].get("vocal_entry_override"))
         # Source positions after the first transition's rate ramp map with slope 1.
         end = round((plan["outgoing_end"] - source_offset) * SR)
         n = round(plan["overlap_seconds"] * SR)
@@ -516,6 +588,15 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         incoming_full = decode(Path(tracks[i + 1]["path"]))
         cue_sample = round(plan["incoming_cue"] * SR)
         incoming, mapping = stretch_intro(incoming_full[cue_sample:], plan["incoming_playback_rate"], n / SR)
+        if plan["vocal_entry"] is not None:
+            delay, vocal_at = _vocal_entry_timing(plan["vocal_entry"], plan["incoming_cue"], n / SR,
+                                                   plan["incoming_playback_rate"])
+            delay_samples = round(delay * SR)
+            if delay_samples:
+                incoming = np.pad(incoming, ((delay_samples, 0), (0, 0)))
+            mapping["output_resume"] += delay_samples / SR
+            plan["incoming_delay_seconds"] = delay_samples / SR
+            plan["incoming_vocal_at"] = vocal_at
         n = min(n, len(incoming))
         start = end - n
         plan["outgoing_start"] = source_offset + start / SR
@@ -529,7 +610,8 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         blended = blend_audio(current[start:end], incoming[:n], plan)
         next_audio = incoming[n:]
         if plan["reverb_wet"]:
-            room = _reverb_send(current[start:end], plan["reverb_wet"])
+            clear_at = max(0.0, plan["incoming_vocal_at"] - .25) if plan["incoming_vocal_at"] is not None else n / SR
+            room = _reverb_send(current[start:end], plan["reverb_wet"], clear_at)
             blended += room[:n]
             next_audio = next_audio.copy()
             tail = min(len(next_audio), len(room) - n)

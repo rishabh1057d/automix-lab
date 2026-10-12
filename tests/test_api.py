@@ -102,6 +102,19 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(renderer.call_args.args[1], tracks)
         self.assertEqual(renderer.call_args.args[2], "plain")
 
+    def test_main_verse_override_validation_and_saved_source(self):
+        payload = [("files", ("a.wav", wav(), "audio/wav")),
+                   ("files", ("b.wav", wav(), "audio/wav"))]
+        with patch.object(server, "new_job", return_value={"id": "pending"}) as schedule:
+            invalid = self.client.post("/api/mixes", data={"vocal_entry_overrides": "[null, 99]"}, files=payload)
+            valid = self.client.post("/api/mixes", data={"vocal_entry_overrides": "[null, 1.5]"}, files=payload)
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(valid.status_code, 200)
+        submitted = schedule.call_args.args[0]
+        with patch.object(server, "make_mix") as renderer:
+            submitted("pending")
+        self.assertEqual(renderer.call_args.args[1][1]["vocal_entry_override"], 1.5)
+
 
 if __name__ == "__main__":
     unittest.main()
