@@ -150,7 +150,8 @@ function clearPlayer() {
   ["cue-value", "overlap-value", "tempo-value"].forEach(id => $(id).textContent = "—");
   $("transition-explanation").textContent = "We look for a musical entry point, align the handoff, and let one track make room for the next.";
   $("inspector-detail").textContent = "Beat analysis · equal-power fades · bass handoff";
-  ["export-audio", "export-plan"].forEach(id => { $(id).removeAttribute("href"); $(id).classList.add("disabled"); $(id).setAttribute("aria-disabled", "true"); });
+  $("export-audio").replaceChildren();
+  $("export-plan").removeAttribute("href"); $("export-plan").classList.add("disabled"); $("export-plan").setAttribute("aria-disabled", "true");
   $("audition-buttons").innerHTML = '<button disabled>↗ Hear transition 01</button><button disabled>↗ Hear transition 02</button>';
   drawAll();
 }
@@ -207,7 +208,9 @@ async function setMode(mode, compare = true) {
   $("audition-buttons").replaceChildren();
   result.transitions.forEach((transition, index) => { const button = document.createElement("button"); button.textContent = `↗ Hear transition ${String(index + 1).padStart(2, "0")}`; button.onclick = () => audition(index); $("audition-buttons").append(button); });
   $("transition-labels").innerHTML = result.transitions.map((transition, index) => `<div class="transition-label" style="left:${100 * transition.timeline_start / result.duration}%;width:${100 * (transition.timeline_end - transition.timeline_start) / result.duration}%"><span>T${index + 1}</span></div>`).join("");
-  [["export-audio", "audio", "wav"], ["export-plan", "plan", "json"]].forEach(([id, route, extension]) => { $(id).href = `/api/mixes/${encodeURIComponent(result.id)}/${route}`; $(id).download = `automix-lab-${mode}.${extension}`; $(id).classList.remove("disabled"); $(id).setAttribute("aria-disabled", "false"); });
+  $("export-audio").replaceChildren();
+  result.transitions.forEach((transition, index) => { const link = document.createElement("a"); link.className = "small-button"; link.href = `/api/mixes/${encodeURIComponent(result.id)}/transitions/${index}/audio`; link.download = `automix-lab-${mode}-transition-${String(index + 1).padStart(2, "0")}.wav`; link.textContent = `↓ Transition ${String(index + 1).padStart(2, "0")} WAV`; $("export-audio").append(link); });
+  $("export-plan").href = `/api/mixes/${encodeURIComponent(result.id)}/plan`; $("export-plan").download = `automix-lab-${mode}.json`; $("export-plan").classList.remove("disabled"); $("export-plan").setAttribute("aria-disabled", "false");
   renderQueue(); renderInspector(); drawAll(); updatePlayback();
 }
 

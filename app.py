@@ -264,6 +264,35 @@ def get_audio(ident: str):
     return FileResponse(path, media_type="audio/wav", filename=f"automix-{ident[:8]}.wav", content_disposition_type="inline")
 
 
+@app.get("/api/mixes/{ident}/transitions/{index}/audio")
+def get_transition_audio(ident: str, index: int):
+    result_file = result_path(ident)
+    transitions = json.loads(result_file.read_text()).get("transitions", [])
+    if not 0 <= index < len(transitions):
+        raise HTTPException(404, "Unknown transition.")
+    folder = result_file.parent
+    clip = folder / f"transition-{index + 1:02d}.wav"
+    if not clip.is_file():
+        temp = folder / f"{clip.stem}-{uuid.uuid4().hex}.tmp.wav"
+        try:
+            with sf.SoundFile(folder / "mix.wav") as source:
+                transition = transitions[index]
+                start = max(0, round((transition["timeline_start"] - 20) * source.samplerate))
+                end = min(source.frames, round((transition["timeline_end"] + 20) * source.samplerate))
+                if end <= start:
+                    raise HTTPException(409, "This transition has no audio to export.")
+                source.seek(start)
+                with sf.SoundFile(temp, mode="w", samplerate=source.samplerate,
+                                  channels=source.channels, subtype=source.subtype, format="WAV") as output:
+                    while source.tell() < end:
+                        output.write(source.read(min(65536, end - source.tell()), dtype="float32", always_2d=True))
+            temp.replace(clip)
+        finally:
+            temp.unlink(missing_ok=True)
+    return FileResponse(clip, media_type="audio/wav",
+                        filename=f"automix-{ident[:8]}-transition-{index + 1:02d}.wav")
+
+
 @app.get("/api/mixes/{ident}/plan")
 def get_plan(ident: str):
     return FileResponse(result_path(ident), media_type="application/json", filename="transition-plan.json")

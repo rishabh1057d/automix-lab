@@ -27,7 +27,7 @@ docker compose stop
 3. Switch to **Plain crossfade** to compare the same queue without the AutoMix decisions.
 4. Use **Hear transition** to audition a handoff from four seconds before its start.
 5. If the detected entry misses Song 2's verse, enter its **Main verse starts at** time in seconds or `mm:ss` in the queue and rebuild. The correction is saved with the session's source list.
-5. Inspect or download the WAV and **Mix plan**.
+6. Inspect the plan or download a WAV for each transition. Each clip includes the 20 seconds before the handoff, the full overlap, and the 20 seconds after it (clamped to the mix boundaries). Two tracks produce one clip; a longer queue produces one clip per adjacent pair. The player still streams the full mix.
 
 Uploads must be mono/stereo, 2 seconds–10 minutes, 8–192 kHz, and at most 100 MB per file. The server binds only to loopback.
 
