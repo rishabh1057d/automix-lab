@@ -286,7 +286,7 @@ function renderInspector() {
   const duck = Number(transition.vocal_duck_db) || 0;
   const skipped = transition.discarded_music_seconds == null ? "" : ` · ${Number(transition.discarded_music_seconds).toFixed(1)}s audible music skipped`;
   const exit = transition.mix_out_type === "full_track_end" ? "Plain fade at file end" : `${transition.mix_out_type === "sustained_outro_drop" ? "Outro" : "End-region"} exit at ${Number(transition.outgoing_end).toFixed(1)}s${skipped}`;
-  const reverb = Number(transition.reverb_wet) ? `Stereo reverb ${Math.round(Number(transition.reverb_wet) * 100)}% · ${Number(transition.reverb_tail_seconds).toFixed(1)}s tail` : "No added reverb";
+  const reverb = [Number(transition.reverb_wet) ? `Outgoing room ${Math.round(Number(transition.reverb_wet) * 100)}% · ${Number(transition.reverb_tail_seconds).toFixed(1)}s tail` : "", Number(transition.incoming_reverb_wet) ? `Incoming room ${Math.round(Number(transition.incoming_reverb_wet) * 100)}%` : ""].filter(Boolean).join(" · ") || "No added reverb";
   const entry = transition.vocal_entry == null ? "No sustained vocal entry found" : `Main verse ${Number(transition.vocal_entry).toFixed(1)}s (${transition.vocal_entry_source}) · heard ${Number(transition.incoming_vocal_at).toFixed(1)}s into handoff`;
   $("inspector-detail").textContent = `${entry} · ${exit} · ${reverb} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
   drawAll();
@@ -302,7 +302,7 @@ function updatePlayback() {
   const progress = transition ? Math.max(0, Math.min(1, (position - transition.timeline_start) / transition.overlap_seconds)) : 0;
   $("out-gain").style.width = `${Math.cos(progress * Math.PI / 2) * 100}%`;
   const fadeStart = transition?.incoming_fade_start ?? 0;
-  $("in-gain").style.width = `${Math.sin(Math.max(0, (progress - fadeStart) / (1 - fadeStart)) * Math.PI / 2) * 100}%`;
+  $("in-gain").style.width = `${Math.sin(Math.max(0, (progress - fadeStart) / (1 - fadeStart)) * Math.PI / 2) ** (transition?.tier === "plain-crossfade" ? 1 : .8) * 100}%`;
   if (!audio.paused) requestAnimationFrame(updatePlayback);
 }
 

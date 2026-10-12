@@ -27,8 +27,10 @@ class EngineTests(unittest.TestCase):
             plan = engine.plan_transition(analysis(), analysis(bpm=bpm))
             self.assertEqual(plan["tier"], expected)
             self.assertLessEqual(abs(plan["incoming_playback_rate"] - 1), .04)
-            self.assertGreaterEqual(plan["overlap_seconds"], 7)
-            self.assertLessEqual(plan["overlap_seconds"], 12)
+            self.assertGreaterEqual(plan["overlap_seconds"], 12)
+            self.assertLessEqual(plan["overlap_seconds"], 16)
+            self.assertEqual(plan["incoming_reverb_wet"], .2)
+            self.assertLessEqual(plan["bass_handoff_seconds"], plan["overlap_seconds"] * .75)
         self.assertEqual(engine.plan_transition(analysis(confidence=.1), analysis(confidence=.1))["tier"], "safe-crossfade")
         self.assertEqual(engine.plan_transition(analysis(confidence=.19), analysis(confidence=.19))["tier"], "dj-assisted")
         self.assertEqual(engine.plan_transition(analysis(duration=5), analysis())["tier"], "safe-crossfade")
@@ -41,7 +43,10 @@ class EngineTests(unittest.TestCase):
         self.assertLessEqual(a["content_end"] - plan["outgoing_end"], 12)
         self.assertIn(plan["outgoing_start"], a["downbeats"])
         self.assertIn(plan["incoming_cue"], b["downbeats"])
-        self.assertEqual(engine.plan_transition(a, b, "plain")["incoming_cue"], 0)
+        plain = engine.plan_transition(a, b, "plain")
+        self.assertEqual(plain["incoming_cue"], 0)
+        self.assertEqual(plain["overlap_seconds"], 6)
+        self.assertEqual(plain["incoming_reverb_wet"], 0)
 
     def test_late_outro_exit_is_early_but_does_not_skip_music(self):
         a, b = analysis(120), analysis(120)
@@ -85,16 +90,15 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(a["mix_out_candidates"])
         plan = engine.plan_transition(a, b)
         self.assertEqual(plan["mix_out_type"], "sustained_outro_drop")
-        self.assertGreater(plan["mix_out_anchor"], a["mix_out_candidates"][0]["time"])
+        self.assertGreaterEqual(plan["mix_out_anchor"], a["mix_out_candidates"][0]["time"])
         self.assertLess(plan["outgoing_start"], 216)
         self.assertGreaterEqual(plan["outgoing_end"], 219)
         self.assertLess(plan["outgoing_end"], a["content_end"])
         self.assertLessEqual(plan["discarded_music_seconds"], 12)
 
-        # Without a later measured downbeat, keep the ending rather than cut the voice.
+        # A long overlap may still fit from the last measured downbeat; it must keep the voice.
         a["downbeats"] = [200, 204, 208]
         guarded = engine.plan_transition(a, b)
-        self.assertEqual(guarded["mix_out_type"], "content_end")
         self.assertGreaterEqual(guarded["outgoing_end"], 219)
         self.assertLessEqual(guarded["discarded_music_seconds"], 12)
 
@@ -104,7 +108,7 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(engine._safe_outro_exit(a, 108))
         a["vocal"] = [0.] * len(a["vocal"])
         a["vocal"][108 * 4:108 * 4 + 5] = [.8] * 5
-        self.assertTrue(engine._safe_outro_exit(a, 108))
+        self.assertFalse(engine._safe_outro_exit(a, 108))
         a["vocal"][108 * 4 + 5] = .8
         self.assertFalse(engine._safe_outro_exit(a, 108))
 
@@ -148,21 +152,21 @@ class EngineTests(unittest.TestCase):
         a.update(content_end=104.8, downbeats=[100], vocal=[1.] * 480)
         b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 4 + [0.] * 460)
         shortened = engine.plan_transition(a, b)
-        self.assertAlmostEqual(shortened["outgoing_start"], 97.8)
-        self.assertEqual(shortened["overlap_seconds"], 7)
+        self.assertAlmostEqual(shortened["outgoing_start"], 92.8)
+        self.assertEqual(shortened["overlap_seconds"], 12)
 
         a, b = analysis(120, bpm=60), analysis(120, bpm=60)
         a.update(content_end=120, downbeats=[100], vocal=[1.] * 480)
         b.update(downbeats=[0], vocal=[0.] * 16 + [1.] * 464)
         bounded = engine.plan_transition(a, b)
-        self.assertEqual((bounded["outgoing_start"], bounded["outgoing_end"]), (112, 120))
-        self.assertEqual(bounded["overlap_seconds"], 8)
+        self.assertEqual((bounded["outgoing_start"], bounded["outgoing_end"]), (108, 120))
+        self.assertEqual(bounded["overlap_seconds"], 12)
         self.assertEqual(bounded["tier"], "safe-crossfade")
         self.assertEqual(bounded["vocal_duck_db"], 0)
 
         too_short = engine.plan_transition(analysis(5), analysis(5))
         self.assertEqual(too_short["overlap_seconds"], 5)
-        self.assertIn("shorter than seven seconds", " ".join(too_short["reasons"]))
+        self.assertIn("shorter than twelve seconds", " ".join(too_short["reasons"]))
 
     def test_unmeasured_vocals_are_unknown_and_safe_tier_never_claims_duck(self):
         a, b = analysis(120), analysis(120, cue=40)
@@ -197,6 +201,7 @@ class EngineTests(unittest.TestCase):
         plan = {"tier": "safe-crossfade", "overlap_seconds": 2,
                 "bass_handoff_seconds": .8, "vocal_duck_db": 0}
         early = slice(round(.3 * len(t)), round(.36 * len(t)))
+        middle = slice(round(.53 * len(t)), round(.57 * len(t)))
         before_entry = slice(round(.2 * len(t)), round(.24 * len(t)))
         late = slice(round(.7 * len(t)), round(.8 * len(t)))
 
@@ -211,10 +216,25 @@ class EngineTests(unittest.TestCase):
         # Song 2 is silent until 25%, then rises through its opening filter.
         self.assertLess(level(100, False, before_entry), 1e-5)
         self.assertGreater(level(100, False, early), .02)
+        self.assertGreater(level(100, False, middle), level(100, True, middle) * .9)
         self.assertGreater(level(100, False, late), .15)
+        self.assertLess(level(3000, False, early), level(100, False, early) * .3)
         self.assertLess(level(10000, False, early), level(100, False, early) * .25)
         end = slice(round(.93 * len(t)), round(.98 * len(t)))
         self.assertGreater(level(10000, False, end), level(100, False, end) * .7)
+
+    def test_incoming_room_is_audible_before_vocals_and_clears_before_entry(self):
+        t = np.arange(engine.SR * 2) / engine.SR
+        silence = np.zeros((len(t), 2), np.float32)
+        incoming = np.repeat((.2 * np.sin(2 * np.pi * 440 * t))[:, None], 2, axis=1).astype(np.float32)
+        plan = {"tier": "safe-crossfade", "overlap_seconds": 2, "incoming_vocal_at": 1.4,
+                "incoming_reverb_wet": 0}
+        dry = engine.blend_audio(silence, incoming, plan)
+        wet = engine.blend_audio(silence, incoming, dict(plan, incoming_reverb_wet=.2))
+        audible = slice(round(.7 * engine.SR), round(1.0 * engine.SR))
+        after_vocal = slice(round(1.2 * engine.SR), round(1.5 * engine.SR))
+        self.assertGreater(float(np.sqrt(np.mean((wet[audible] - dry[audible]) ** 2))), .001)
+        np.testing.assert_allclose(wet[after_vocal], dry[after_vocal], atol=1e-7)
 
     def test_vocal_duck_is_audible_signal_processing(self):
         t = np.arange(4410) / engine.SR
@@ -268,13 +288,13 @@ class EngineTests(unittest.TestCase):
         phrase = engine.plan_transition(a, b)
         self.assertAlmostEqual(phrase["vocal_entry"], 15, delta=.25)
         self.assertEqual(phrase["vocal_entry_source"], "automatic")
-        self.assertAlmostEqual(phrase["incoming_vocal_at"], phrase["overlap_seconds"] * .75, delta=.5)
+        self.assertAlmostEqual(phrase["incoming_vocal_at"], phrase["overlap_seconds"] * .5, delta=.5)
         self.assertGreater(phrase["incoming_cue"], 5)
         immediate = analysis(120)
         immediate["vocal"][:20] = [1.] * 20
         padded = engine.plan_transition(a, immediate)
         self.assertGreater(padded["incoming_delay_seconds"], 0)
-        self.assertAlmostEqual(padded["incoming_vocal_at"], padded["overlap_seconds"] * .75, delta=.5)
+        self.assertAlmostEqual(padded["incoming_vocal_at"], padded["overlap_seconds"] * .5, delta=.5)
         manual = engine.plan_transition(a, b, vocal_entry_override=50)
         self.assertEqual((manual["vocal_entry"], manual["vocal_entry_source"]), (50, "manual"))
         b["vocal_source"] = "DSP heuristic fallback"
