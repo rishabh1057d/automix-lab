@@ -13,7 +13,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from transition_effects import local_pulse, ping_pong_echo, render_rhythm_loop
+from transition_effects import limit_effect_peak, local_pulse, ping_pong_echo, render_rhythm_loop
 
 SR = 44100
 VERSION = "analysis-8-vocal-entry-45s"
@@ -436,7 +436,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
             "incoming_delay_seconds": delay, "incoming_vocal_at": entry_at,
             "incoming_fade_start": .25 if not plain else 0.0,
             "bass_crossover_hz": 180 if not plain else 0,
-            "echo": {"enabled": not plain, "wet": .45, "feedback": .65,
+            "echo": {"enabled": not plain, "profile": "pronounced", "wet": .85, "feedback": .78,
                      "tail_seconds": 6.0, "vocal_duck_db": 3 if _model_vocals(b) and not plain else 0},
             "confidence": min(ca, cb), "reasons": reasons}
 
@@ -540,8 +540,11 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict, *, retur
         start = min(end - 1 / SR, max(available, center - .1 * seconds))
         bass = np.clip((x * seconds - start) / max(1 / SR, end - start), 0, 1)
         plan.update(bass_handoff_start_seconds=start, bass_handoff_end_seconds=end)
-        outgoing = (outgoing - a_low) * outgoing_gain + a_low * np.cos(bass * np.pi / 2)
-        incoming = (incoming - b_low) * incoming_gain + b_low * np.sin(bass * np.pi / 2)
+        body = np.clip(x * seconds / .08, 0, 1) * np.clip((1 - x) * seconds / .5, 0, 1)
+        a_body = a_low + body * (1.6 * np.tanh(1.8 * a_low) / 1.8 - a_low)
+        b_body = b_low + body * (1.6 * np.tanh(1.8 * b_low) / 1.8 - b_low)
+        outgoing = (outgoing - a_low) * outgoing_gain + a_body * np.cos(bass * np.pi / 2)
+        incoming = (incoming - b_low) * incoming_gain + b_body * np.sin(bass * np.pi / 2)
     else:
         outgoing = outgoing * outgoing_gain
         incoming = incoming * incoming_gain
@@ -615,6 +618,7 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
     notify("planning", 55, "Selecting structural cues and transition tiers")
     current = decode(Path(tracks[0]["path"]))
     original_current = current
+    source_peak = float(np.max(np.abs(current)))
     segments, transitions = [], []
     effect_beds = []
     timeline = 0.0
@@ -640,6 +644,7 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         n = min(n, max(1, end // 2))
         start = end - n
         incoming_full = decode(Path(tracks[i + 1]["path"]))
+        source_peak = max(source_peak, float(np.max(np.abs(incoming_full))))
         cue_sample = round(plan["incoming_cue"] * SR)
         incoming, mapping = stretch_intro(incoming_full[cue_sample:], plan["incoming_playback_rate"], n / SR)
         if plan["vocal_entry"] is not None:
@@ -677,16 +682,19 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
             settings = plan["echo"]
             settings.update(outgoing_delay_seconds=outgoing_pulse or .4, incoming_delay_seconds=incoming_pulse or .4,
                             outgoing_timing="measured" if outgoing_pulse else "fixed",
-                            incoming_timing="measured" if incoming_pulse else "fixed")
+                            incoming_timing="measured" if incoming_pulse else "fixed", send_source="before_track_fades")
             history = current[max(0, start - round(settings["tail_seconds"] * SR)):start]
-            wet = ping_pong_echo(outgoing_deck, settings["outgoing_delay_seconds"], history,
+            progress = np.linspace(0, 1, n, dtype=np.float32)[:, None]
+            outgoing_send = current[start:end] * (1 - .65 * np.clip((progress - .65) / .35, 0, 1))
+            incoming_send = incoming[:n] * np.clip((progress - .25) / .35, 0, 1)
+            wet = ping_pong_echo(outgoing_send, settings["outgoing_delay_seconds"], history,
                                  settings["wet"], settings["feedback"], settings["tail_seconds"])
-            wet += ping_pong_echo(incoming_deck + rhythm, settings["incoming_delay_seconds"],
+            wet += ping_pong_echo(incoming_send + rhythm, settings["incoming_delay_seconds"],
                                   wet=settings["wet"], feedback=settings["feedback"], tail_seconds=settings["tail_seconds"])
             wet *= _echo_vocal_gain(analyses[i + 1], plan, len(wet))[:, None]
             effect_beds.append((round(transition_start * SR), wet))
             plan["effects_end"] = plan["timeline_end"] + settings["tail_seconds"]
-            plan["reasons"].append("Stereo echoes follow measured beats where available and decay for six seconds after the handoff; bass transfers on its own envelope.")
+            plan["reasons"].append("Strong stereo echoes take their sound before the track fades, follow measured beats where available, and decay for six seconds afterwards; warm source bass transfers on its own envelope.")
         else:
             plan["rhythm_loop"] = {"enabled": False, "reason": "Plain comparison uses no rhythm loop."}
         if plan["reverb_wet"]:
@@ -703,24 +711,37 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
     segments.append(current)
     notify("rendering", 94, "Writing audio and waveform")
     audio = np.concatenate(segments)
+    ceiling = 10 ** (-1 / 20)
+    reference_peak = source_peak if mode == "automix" else float(np.max(np.abs(audio)))
+    attenuation = min(1.0, ceiling / max(reference_peak, 1e-12))
+    audio *= attenuation
     for offset, bed in effect_beds:
         count = min(len(bed), len(audio) - offset)
         if count > 0:
-            audio[offset:offset + count] += bed[:count]
+            audio[offset:offset + count] += bed[:count] * attenuation
+    regions = []
     for transition in transitions:
         if "effects_end" in transition:
             transition["effects_end"] = min(len(audio) / SR, transition["effects_end"])
+        if mode == "automix":
+            start, end = round(transition["timeline_start"] * SR), round(transition.get("effects_end", transition["timeline_end"]) * SR)
+            if regions and start <= regions[-1][1]:
+                regions[-1] = (regions[-1][0], max(end, regions[-1][1]))
+            else:
+                regions.append((start, end))
+    effect_reduction = 0.0
+    for start, end in regions:
+        audio[start:end], reduction = limit_effect_peak(audio[start:end], ceiling)
+        effect_reduction = max(effect_reduction, reduction)
     peak = float(np.max(np.abs(audio)))
-    ceiling = 10 ** (-1 / 20)
-    attenuation = min(1.0, ceiling / max(peak, 1e-12))
-    audio *= attenuation
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     sf.write(output_dir / "mix.wav", audio, SR, subtype="PCM_24")
     result = {"mode": mode, "duration": len(audio) / SR, "sample_rate": SR,
               "tracks": track_details, "transitions": transitions, "waveform": peaks(audio, 1800),
-              "peak_dbfs": round(20 * math.log10(max(peak * attenuation, 1e-12)), 3),
+              "peak_dbfs": round(20 * math.log10(max(peak, 1e-12)), 3),
               "analysis_cache_hits": sum(a["cache_hit"] for a in analyses),
+              "effect_peak_reduction_db": round(effect_reduction, 3),
               "gain_reduction_db": round(-20 * math.log10(attenuation), 3)}
     (output_dir / "plan.json").write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
     notify("complete", 100, "Mix ready")

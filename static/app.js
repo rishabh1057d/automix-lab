@@ -299,7 +299,7 @@ function renderInspector() {
   const echo = transition.echo;
   const loop = transition.rhythm_loop;
   const echoTiming = echo?.outgoing_timing === "measured" && echo?.incoming_timing === "measured" ? "on beat" : echo?.outgoing_timing === "measured" || echo?.incoming_timing === "measured" ? "with beat and fixed timing" : "with fixed timing";
-  const effects = [echo?.enabled ? `Echo ${echoTiming} · ${Number(echo.tail_seconds).toFixed(1)}s tail` : "", loop ? loop.enabled ? "Song 1 rhythm blended into Song 2" : `Rhythm blend skipped: ${loop.reason || "no suitable phrase found"}` : ""].filter(Boolean).join(" · ");
+  const effects = [echo?.enabled ? `${echo.profile === "pronounced" ? "Pronounced echo" : "Echo"} ${echoTiming} · ${Number(echo.tail_seconds).toFixed(1)}s tail` : "", loop ? loop.enabled ? "Song 1 rhythm blended into Song 2" : `Rhythm blend skipped: ${loop.reason || "no suitable phrase found"}` : ""].filter(Boolean).join(" · ");
   const bass = bassApplied && transition.bass_handoff_start_seconds != null && transition.bass_handoff_end_seconds != null ? `${Number(transition.bass_handoff_start_seconds).toFixed(1)}–${Number(transition.bass_handoff_end_seconds).toFixed(1)}s into fade` : bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied";
   $("inspector-detail").textContent = `${entry} · ${exit} · ${reverb}${effects ? ` · ${effects}` : ""} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bass}`;
   drawAll();

@@ -8,6 +8,36 @@ from scipy.ndimage import median_filter
 SR = 44100
 
 
+def limit_effect_peak(audio: np.ndarray, ceiling: float) -> tuple[np.ndarray, float]:
+    """Limit only this effect window with linked stereo gain and a short release."""
+    audio = np.asarray(audio, dtype=np.float32)
+    if not np.isfinite(ceiling) or ceiling <= 0 or not np.isfinite(audio).all():
+        raise ValueError("Effect audio must be finite and its peak ceiling positive.")
+    if not len(audio) or float(np.max(np.abs(audio))) <= ceiling:
+        return audio.copy(), 0.0
+    peaks = np.max(np.abs(audio), axis=1)
+    block = 128
+    padded = np.pad(peaks, (0, (-len(peaks)) % block))
+    block_peaks = padded.reshape(-1, block).max(axis=1)
+    safe_ceiling = float(np.nextafter(np.float32(ceiling), np.float32(0)))
+    required = np.minimum(1.0, safe_ceiling / np.maximum(block_peaks, 1e-12))
+    controls = np.minimum.reduce((required, np.r_[1., required[:-1]], np.r_[required[1:], 1.]))
+    release = np.exp(-block / (.08 * SR))
+    gain = 1.0
+    for i, required_gain in enumerate(controls):
+        gain = min(float(required_gain), 1 - (1 - gain) * release)
+        controls[i] = gain
+    controls[controls > 1 - 1e-5] = 1
+    envelope = np.interp(np.arange(len(audio)), np.arange(len(controls)) * block, controls)
+    recovery = min(len(audio), round(.25 * SR))
+    blend = .5 - .5 * np.cos(np.linspace(0, np.pi, recovery))
+    envelope[-recovery:] += (1 - envelope[-recovery:]) * blend
+    envelope[0] = 1
+    # Interpolation and end recovery can miss an isolated peak; cap only those samples.
+    envelope = np.minimum(envelope, np.where(peaks > ceiling, safe_ceiling / np.maximum(peaks, 1e-12), 1.0))
+    return (audio * envelope[:, None]).astype(np.float32), float(-20 * np.log10(max(float(envelope.min()), 1e-12)))
+
+
 def local_pulse(analysis: dict, start: float, end: float, rate: float = 1.0) -> float | None:
     beats = np.asarray(analysis.get("beats", []), dtype=float)
     beats = np.unique(beats[np.isfinite(beats) & (beats >= start - 1e-6) & (beats <= end + 1e-6)])
@@ -21,7 +51,7 @@ def local_pulse(analysis: dict, start: float, end: float, rate: float = 1.0) -> 
 
 
 def ping_pong_echo(send: np.ndarray, delay_seconds: float, history: np.ndarray | None = None,
-                   wet: float = .45, feedback: float = .65, tail_seconds: float = 6.0) -> np.ndarray:
+                   wet: float = .85, feedback: float = .78, tail_seconds: float = 6.0) -> np.ndarray:
     """Return only repeats; prehistory seeds them without extending the source send."""
     if not .08 <= delay_seconds <= 6 or not 0 <= feedback < 1 or wet < 0 or tail_seconds < 0:
         raise ValueError("Echo delay, feedback, wet level or tail is outside its supported range.")
@@ -31,7 +61,7 @@ def ping_pong_echo(send: np.ndarray, delay_seconds: float, history: np.ndarray |
         return output
     prior = np.asarray(history[-6 * SR:] if history is not None else np.empty((0, 2)), dtype=np.float32)
     source = np.concatenate((prior, np.asarray(send, dtype=np.float32)))
-    filtered = signal.sosfilt(signal.butter(3, [200, 5000], "bandpass", fs=SR, output="sos"),
+    filtered = signal.sosfilt(signal.butter(3, [200, 6500], "bandpass", fs=SR, output="sos"),
                               source, axis=0).astype(np.float32)
     cutoff = min(n, round(.02 * SR))
     filtered[-cutoff:] *= np.linspace(1, 0, cutoff, dtype=np.float32)[:, None]

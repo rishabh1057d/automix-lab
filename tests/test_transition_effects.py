@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from transition_effects import SR, local_pulse, ping_pong_echo, render_rhythm_loop
+from transition_effects import SR, limit_effect_peak, local_pulse, ping_pong_echo, render_rhythm_loop
 
 
 def evidence(duration=40, pulse=.5):
@@ -24,6 +24,37 @@ def percussion(duration=40):
 
 
 class TransitionEffectsTests(unittest.TestCase):
+    def test_local_limiter_bounds_bursts_preserves_stereo_and_recovers(self):
+        time = np.arange(3 * SR) / SR
+        baseline = .18 * np.sin(2 * np.pi * 440 * time)
+        burst = np.zeros(len(time))
+        for start in (.6, 1., 1.4, 1.8):
+            local = time - start
+            burst += np.where((local >= 0) & (local < .16), 2.4 * np.cos(2 * np.pi * 900 * local), 0)
+        audio = np.stack((baseline + burst, .4 * (baseline + burst)), axis=1).astype(np.float32)
+        original = audio.copy()
+        limited, reduction = limit_effect_peak(audio, .89)
+        self.assertTrue(np.array_equal(audio, original))
+        self.assertLessEqual(float(np.max(np.abs(limited))), .89)
+        self.assertTrue(np.isfinite(limited).all())
+        self.assertGreater(reduction, 6)
+        np.testing.assert_allclose(limited[:, 1], .4 * limited[:, 0], atol=1e-7)
+        np.testing.assert_array_equal(limited[:round(.5 * SR)], audio[:round(.5 * SR)])
+        np.testing.assert_array_equal(limited[-round(.1 * SR):], audio[-round(.1 * SR):])
+        self.assertEqual(limited.dtype, np.float32)
+
+    def test_local_limiter_leaves_sub_ceiling_silence_and_tiny_audio_unchanged(self):
+        rng = np.random.default_rng(3)
+        for audio in (np.zeros((0, 2), dtype=np.float32), np.zeros((1, 2), dtype=np.float32),
+                      rng.uniform(-.4, .4, (1024, 2)).astype(np.float32)):
+            limited, reduction = limit_effect_peak(audio, .89)
+            np.testing.assert_array_equal(limited, audio)
+            self.assertEqual(reduction, 0)
+        limited, reduction = limit_effect_peak(np.array([[2., -1.]], dtype=np.float32), .89)
+        self.assertLessEqual(float(np.max(np.abs(limited))), .89)
+        self.assertAlmostEqual(float(limited[0, 1] / limited[0, 0]), -.5)
+        self.assertGreater(reduction, 6)
+
     def test_measured_local_pulse_and_rate(self):
         measured = evidence()
         self.assertEqual(local_pulse(measured, 2, 4), .5)
@@ -35,7 +66,7 @@ class TransitionEffectsTests(unittest.TestCase):
     def test_echo_spacing_stereo_feedback_and_exact_tail(self):
         send = np.zeros((SR, 2), dtype=np.float32)
         send[round(.1 * SR)] = 1
-        wet = ping_pong_echo(send, .25)
+        wet = ping_pong_echo(send, .25, feedback=.65)
         self.assertEqual(wet.shape, (7 * SR, 2))
         energies = []
         for repeat, time in enumerate((.35, .6, .85)):
@@ -63,7 +94,7 @@ class TransitionEffectsTests(unittest.TestCase):
         time = np.arange(SR) / SR
         send = np.repeat((.1 * np.cos(2 * np.pi * 1000 * time))[:, None], 2, axis=1).astype(np.float32)
         original = send.copy()
-        wet = ping_pong_echo(send, 1.5, feedback=0)
+        wet = ping_pong_echo(send, 1.5, wet=.45, feedback=0)
         self.assertTrue(np.array_equal(send, original))
         self.assertLess(float(np.max(np.abs(wet[round(2.499 * SR):round(2.5 * SR)]))), .003)
         self.assertGreater(float(np.max(np.abs(wet[round(2.46 * SR):round(2.47 * SR)]))), .02)

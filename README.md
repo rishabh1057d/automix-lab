@@ -160,15 +160,15 @@ For AutoMix:
 
 - Song 1 uses an equal-power fade from the first overlap sample. Its low-pass closes from 5 kHz to 250 Hz; a 150 ms dry-to-filter ramp avoids a hard timbre jump.
 - Song 2 is silent for the first quarter, then rises more assertively under a 650 Hz low-pass that opens to full tone by the end. Its 20%-wet short room effect is audible during entry and clears before the planned vocal (or by the midpoint when no phrase is known).
-- A separate bass layer below 180 Hz keeps Song 1's kick/bass present while its upper frequencies fade. It crosses to Song 2 around the planned bass handoff, after incoming audio is available, usually completing near 65% of the overlap. It uses the recordings' own bass rather than adding a synthesized note or boosting both bass lines together.
+- A separate bass layer below 180 Hz keeps Song 1's kick/bass present while its upper frequencies fade. A smooth, warm saturation gives the existing bass more body during the overlap and returns to its original tone at the boundary. It crosses to Song 2 around the planned bass handoff, after incoming audio is available, usually completing near 65% of the overlap. It uses the recordings' own bass rather than adding a synthesized note or boosting both bass lines together.
 - Unavoidable model-detected vocal collision can apply complementary vocal-band ducking, capped at 6 dB.
 - An eligible structural outro may add a 10%-wet, 0.7-second stereo room response earlier in the overlap. Its return is gone before the selected incoming vocals.
 - Whole-track WSOLA is used only for an eligible small tempo adjustment (at most 4%), then ramps back to native tempo after the overlap. An isolated percussion loop can separately be stretched by up to 12%.
-- One global attenuation pass limits the final output to **−1 dBFS sample peak**.
+- A shared source gain provides the normal output headroom. A stereo-linked peak limiter acts only inside transitions and their tails, keeping output at **−1 dBFS sample peak** without making every later part of the song quieter because of a loud echo.
 
 #### Rhythm, bass, and echo as one handoff
 
-The room reverb gives the entrance space; the echo adds clearly repeated musical material that remains audible throughout the handoff. Each deck sends to a stereo ping-pong echo at 45% wet level with 65% feedback. Repeats alternate emphasis between the ears and follow each deck's measured local beat spacing. If a reliable local pulse is unavailable, that deck uses a 400 ms delay and the inspector reports fixed timing. An 80 ms entrance ramp and preceding Song 1 audio seed the echo without an abrupt click. The repeats are filtered to 200 Hz–5 kHz so low bass remains on the dedicated bass layer. Known incoming vocals lower the echo return by 3 dB with smooth attack/release; they do not switch it off.
+The room reverb gives the entrance space; the echo adds clearly repeated musical material that remains audible throughout the handoff. The pronounced profile uses an 85% echo send and 78% feedback. Sends take their audio **before** the track's volume and closing low-pass fades, so fading Song 1 does not also erase its echo. Song 2's send opens from 25% and reaches full strength around 60%, using the same selected cue and padded vocal timing as the main track. Repeats alternate emphasis between the ears and follow each deck's measured local beat spacing. If a reliable local pulse is unavailable, that deck uses a 400 ms delay and the inspector reports fixed timing. An 80 ms entrance ramp and preceding Song 1 audio seed the echo without an abrupt click. The repeats are filtered to 200 Hz–6.5 kHz so low bass remains on the dedicated bass layer. Known incoming vocals lower the echo return by 3 dB with smooth attack/release; they do not switch it off.
 
 When the evidence supports a rhythm blend, the renderer finds a clean measured bar within the final 30 seconds before Song 1's selected exit. UMX-HQ must cover the entire bar without sustained vocal activity, and both source and target bars must have regular measured beats. Harmonic/percussive separation reduces pitched material, and WSOLA fits the short percussion phrase to Song 2's bar within ±12%. It starts on an incoming downbeat, repeats beneath Song 2 at a noticeable level, and fades out during the final quarter. Missing vocal coverage, unreliable beats, insufficient percussion, or a larger tempo mismatch produces an explicit fallback reason. The renderer never invents a beat grid or loops an unverified vocal phrase.
 
@@ -239,7 +239,7 @@ A transition entry contains values such as:
   "incoming_vocal_at": 6.0,
   "incoming_fade_start": 0.25,
   "bass_crossover_hz": 180,
-  "echo": {"enabled": true, "wet": 0.45, "feedback": 0.65, "tail_seconds": 6},
+  "echo": {"enabled": true, "profile": "pronounced", "wet": 0.85, "feedback": 0.78, "tail_seconds": 6},
   "rhythm_loop": {"enabled": false, "reason": "No covered instrumental bar with regular measured beats."},
   "timeline_start": 208.07,
   "timeline_end": 220.07,
