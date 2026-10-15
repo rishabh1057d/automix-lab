@@ -99,7 +99,7 @@ flowchart TD
   G -->|yes| KEEP[Keep later audio / content end]
   G -->|no| IN[Find first sustained incoming vocal phrase]
   KEEP --> IN
-  IN --> SCORE[Place phrase at 75% of overlap; align nearby measured downbeat]
+  IN --> SCORE[Place phrase near overlap midpoint; align nearby measured downbeat]
   SCORE --> LEN[Apply overlap policy]
   LEN --> OUT[Plan plus human-readable reasons]
 ```
@@ -109,18 +109,18 @@ flowchart TD
 1. Start from the audible/content ending.
 2. Consider an earlier exit only when a sustained final energy decline does not recover into a strong section.
 3. Never discard more than **12 seconds of measured audible music** after an early exit.
-4. When model evidence covers the region, preserve a later sustained vocal phrase. A short immediate vocal decay is allowed; a later return is not.
+4. When model evidence covers the region, do not cut an active vocal at the exit or a later sustained phrase.
 5. With a dependable grid, move the overlap start to a nearby downbeat only if the same safety rules still hold.
 
 #### Incoming cue policy
 
-The detector joins vocal gaps of at most 0.75 seconds and requires three seconds of active vocals within a five-second region. It backtracks to quieter opening syllables. A detected verse or a manual timestamp is targeted near 75% of the overlap. If the required source cue would be before the file starts, the renderer delays Song 2 instead of cutting its opening vocal. It uses a measured downbeat only when that keeps the target within 0.5 seconds. If no phrase is found, the earlier conservative energy/downbeat cue remains and the inspector says so.
+The detector joins vocal gaps of at most 0.75 seconds and requires three seconds of active vocals within a five-second region. It backtracks to quieter opening syllables. A detected verse or a manual timestamp is targeted near the midpoint of the overlap so the new voice participates in the handoff. If the required source cue would be before the file starts, the renderer delays Song 2 instead of cutting its opening vocal; that physical limit may still keep Song 2 quiet at first. It uses a measured downbeat only when that keeps the target within 0.5 seconds. If no phrase is found, the earlier conservative energy/downbeat cue remains and the inspector says so.
 
 Weak BPM, missing downbeats, unusual tempo, or short material selects a safe crossfade. The engine does not claim beat precision it cannot support.
 
 #### Transition length
 
-AutoMix has a **7 second minimum** whenever both selected source regions contain at least 7 seconds of usable audio. Structural/tempo evidence may choose longer overlaps up to **12 seconds**. Vocal conflict handling cannot shorten AutoMix under that floor; it uses complementary ducking where evidence supports it.
+AutoMix has a **12 second minimum** whenever both selected source regions contain at least 12 seconds of usable audio. Structural/tempo evidence may choose longer overlaps up to **16 seconds**. Vocal conflict handling cannot shorten AutoMix under that floor; it uses complementary ducking where evidence supports it.
 
 For physically short material, the plan uses the longest possible overlap and explicitly explains the exception. Plain crossfade remains a simpler 6 second reference, shortened only when a tiny source makes that impossible.
 
@@ -133,14 +133,14 @@ sequenceDiagram
   participant A as Song 1
   participant M as Renderer
   participant B as Song 2
-  Note over A,B: Example: 8 second AutoMix overlap
+  Note over A,B: Example: 12 second AutoMix overlap
   A->>M: Full level at overlap start
   Note over A,M: Song 1 fades immediately;
   Note over A,M: low-pass closes 5 kHz to 250 Hz
   Note over M,B: First quarter: Song 2 gain is zero
   B->>M: From 25%: Song 2 fades in
-  Note over M,B: Main verse enters near 75%
-  Note over M,B: Incoming low-pass opens to full tone
+  Note over M,B: Main verse enters near midpoint
+  Note over M,B: Strong incoming low-pass opens; short room fades before vocals
   M->>B: Continue Song 2 at native tempo
 ```
 
@@ -149,15 +149,16 @@ overlap progress       0%       25%       50%       75%       100%
 Song 1 gain            full ────────╲────────────────────────── 0
 Song 1 tone            dry → low-pass closing to 250 Hz
 Song 2 gain             0 ──────╱──────────────────────────── full
-Song 2 tone            silent   5 kHz low-pass → full tone
-Song 2 voice           selected sustained phrase near 75%
+Song 2 tone            silent   650 Hz low-pass → full tone
+Song 2 room            silent   short textured entry → clear before voice
+Song 2 voice           selected sustained phrase near midpoint
 ```
 
 For eligible AutoMix tiers:
 
 - Song 1 uses an equal-power fade from the first overlap sample. Its low-pass closes from 5 kHz to 250 Hz; a 150 ms dry-to-filter ramp avoids a hard timbre jump.
-- Song 2 is silent for the first quarter, then rises under a 5 kHz low-pass that opens to full tone by the end.
-- Beatmatched/DJ-assisted plans exchange low frequencies around a planned bass handoff.
+- Song 2 is silent for the first quarter, then rises more assertively under a 650 Hz low-pass that opens to full tone by the end. Its 20%-wet short room effect is audible during entry and clears before the planned vocal (or by the midpoint when no phrase is known).
+- Beatmatched/DJ-assisted plans exchange low frequencies around 55% of the overlap so Song 2's bass arrives earlier.
 - Unavoidable model-detected vocal collision can apply complementary vocal-band ducking, capped at 6 dB.
 - An eligible structural outro may add a 10%-wet, 0.7-second stereo room response earlier in the overlap. Its return is gone before the selected incoming vocals.
 - WSOLA is used only for an eligible small tempo adjustment, then ramps back to native tempo after the overlap.
@@ -168,10 +169,10 @@ For eligible AutoMix tiers:
 | Behavior | AutoMix | Plain crossfade |
 | --- | --- | --- |
 | Cue selection | Structural exit + pair-scored incoming cue | Track endings and beginnings |
-| Length | 7–12 seconds where possible | 6 seconds, shorter for tiny files |
+| Length | 12–16 seconds where possible | 6 seconds, shorter for tiny files |
 | Beat alignment / WSOLA | Evidence-gated | Never |
 | Filters, bass handoff, vocal duck | Eligible tiers only | No |
-| Structural reverb | Eligible outro only | No |
+| Reverb | Incoming room during entry; extra outgoing room on eligible outros | No |
 
 Plain mode is not a failure path. It is the reference listeners use to decide whether the additional transition logic helped a specific pair.
 
@@ -191,18 +192,19 @@ A transition entry contains values such as:
 ```json
 {
   "tier": "dj-assisted",
-  "outgoing_start": 212.07,
+  "outgoing_start": 208.07,
   "outgoing_end": 220.07,
-  "incoming_cue": 2.0,
-  "overlap_seconds": 8.0,
+  "incoming_cue": 11.25,
+  "overlap_seconds": 12.0,
   "mix_out_type": "sustained_outro_drop",
   "vocal_evidence": "model",
   "vocal_duck_db": 2.5,
   "reverb_wet": 0.1,
+  "incoming_reverb_wet": 0.2,
   "vocal_entry": 17.25,
   "vocal_entry_source": "automatic",
   "incoming_delay_seconds": 0,
-  "incoming_vocal_at": 5.25,
+  "incoming_vocal_at": 6.0,
   "incoming_fade_start": 0.25,
   "reasons": ["human-readable planning evidence"]
 }
@@ -261,7 +263,7 @@ docker compose run --rm automix python -m unittest discover -s tests -q
 node --check static/app.js
 ```
 
-Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 7 second floor, no incoming signal before 25%, filter sweeps, vocal collision policy, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
+Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 12 second floor, no incoming signal before 25%, filter sweeps, incoming room clearance, vocal collision policy, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
 
 When improving the transition engine:
 

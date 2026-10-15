@@ -17,7 +17,8 @@ SR = 44100
 VERSION = "analysis-8-vocal-entry-45s"
 VOCAL_ACTIVE = .35
 MAX_DISCARDED_MUSIC_SECONDS = 12.0
-MIN_AUTOMIX_OVERLAP_SECONDS = 7.0
+MIN_AUTOMIX_OVERLAP_SECONDS = 12.0
+INCOMING_VOCAL_TARGET = .50
 
 
 def decode(path: Path) -> np.ndarray:
@@ -241,12 +242,9 @@ def _safe_outro_exit(a: dict, end: float) -> bool:
         times = np.arange(end, a["content_end"], .25)
         if not _covered(a, times).all():
             return False
-        # ponytail: UMX activity is not a singing probability; allow brief immediate decay, not a later phrase.
         active = (_activity(a, times) >= VOCAL_ACTIVE).astype(int)
-        quiet = np.flatnonzero(active == 0)
-        lead = int(quiet[0]) if len(quiet) else len(active)
-        return lead <= 5 and not (len(active) - lead >= 4 and
-                                  np.any(np.convolve(active[lead:], np.ones(4, dtype=int), mode="valid") == 4))
+        return not ((len(active) and active[0]) or
+                    (len(active) >= 4 and np.any(np.convolve(active, np.ones(4, dtype=int), mode="valid") == 4)))
     return True
 
 
@@ -275,7 +273,7 @@ def _first_vocal_phrase(analysis: dict) -> float | None:
 
 
 def _vocal_entry_timing(vocal_entry: float, cue: float, overlap: float, rate: float) -> tuple[float, float]:
-    delay = max(0.0, .75 * overlap - (vocal_entry - cue) / rate)
+    delay = max(0.0, INCOMING_VOCAL_TARGET * overlap - (vocal_entry - cue) / rate)
     return delay, delay + (vocal_entry - cue) / rate
 
 
@@ -303,7 +301,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
         tier, rate = "dj-assisted", 1.0
         reasons.append("Tempo distance or beat confidence prevents stretching; structural cues and EQ remain available.")
     if not plain:
-        reasons.append("Song 1 fades under a 5 kHz-to-250 Hz low-pass; Song 2 rises from 25% through a 5 kHz low-pass opening to full tone.")
+        reasons.append("Song 1 fades under a 5 kHz-to-250 Hz low-pass; Song 2 rises from 25% through a 650 Hz low-pass opening to full tone and a short room effect.")
     for item in (a, b):
         if item.get("beat_warning"):
             reasons.append(item["beat_warning"])
@@ -313,7 +311,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
     outro = next(iter(outros), None)
     overlap = (6.0 if plain else float(np.clip(
         (16 if outro else 8) * 60 / bpm_a if tier != "safe-crossfade" else MIN_AUTOMIX_OVERLAP_SECONDS,
-        MIN_AUTOMIX_OVERLAP_SECONDS, 12)))
+        MIN_AUTOMIX_OVERLAP_SECONDS, 16)))
     end = a["duration"] if plain else (outro["time"] if outro else a["content_end"])
     cue = 0.0 if plain else b["audible_start"]
     if outro and tier == "safe-crossfade":
@@ -344,8 +342,8 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
                 outro = candidate
                 break
         if not starts:
-            outro, overlap, end = None, float(np.clip(8 * 60 / bpm_a, MIN_AUTOMIX_OVERLAP_SECONDS, 12)), a["content_end"]
-            starts = [t for t in a.get("downbeats", []) if end - 12 <= t + overlap <= end
+            outro, overlap, end = None, float(np.clip(8 * 60 / bpm_a, MIN_AUTOMIX_OVERLAP_SECONDS, 16)), a["content_end"]
+            starts = [t for t in a.get("downbeats", []) if end - 16 <= t + overlap <= end
                       and t >= overlap and _safe_outro_exit(a, t + overlap)]
         starts = starts or [end - overlap]
         pairs = [(start, cue) for start in starts for cue in incoming]
@@ -368,10 +366,10 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
     if outro:
         reasons.append("Sustained late-song energy drop; overlap carries the outro until the remaining tail is safe to skip.")
     if vocal_entry is not None:
-        target_cue = max(0.0, vocal_entry - .75 * overlap * rate)
+        target_cue = max(0.0, vocal_entry - INCOMING_VOCAL_TARGET * overlap * rate)
         measured = [t for t in b.get("downbeats", []) if t <= vocal_entry and abs(t - target_cue) <= .5]
         cue = min(measured, key=lambda t: abs(t - target_cue)) if measured else target_cue
-        reasons.append(f"{entry_source.capitalize()} sustained vocal phrase at {vocal_entry:.1f}s is placed near 75% of the handoff.")
+        reasons.append(f"{entry_source.capitalize()} sustained vocal phrase at {vocal_entry:.1f}s is placed near the midpoint of the handoff.")
     elif not plain:
         reasons.append("No sustained vocal phrase detected in first 45 seconds; using a conservative entry.")
     outgoing_span = end if plain else max(1 / SR, end - a["audible_start"])
@@ -379,7 +377,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
     available = min(outgoing_span, max(1 / SR, (incoming_end - cue) / max(rate, 1e-6)))
     overlap = min(overlap, available) if not plain else min(overlap, available / 3)
     if not plain and overlap < MIN_AUTOMIX_OVERLAP_SECONDS:
-        reasons.append("Selected audio is shorter than seven seconds; the longest physically possible handoff is used.")
+        reasons.append("Selected audio is shorter than twelve seconds; the longest physically possible handoff is used.")
     start = end - overlap
     if tier in ("beatmatched", "dj-assisted") and (
             not any(abs(t - start) <= .125 for t in a.get("downbeats", [])) or
@@ -387,12 +385,12 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
         tier, rate = "safe-crossfade", 1.0
         reasons.append("Selected cue pair lacks measured downbeats; tempo stretching and beat effects are disabled.")
     if vocal_entry is not None:
-        target_cue = max(0.0, vocal_entry - .75 * overlap * rate)
+        target_cue = max(0.0, vocal_entry - INCOMING_VOCAL_TARGET * overlap * rate)
         measured = [t for t in b.get("downbeats", []) if t <= vocal_entry and abs(t - target_cue) <= .5]
         cue = min(measured, key=lambda t: abs(t - target_cue)) if measured else target_cue
         if tier in ("beatmatched", "dj-assisted") and not measured:
             tier, rate = "safe-crossfade", 1.0
-            cue = max(0.0, vocal_entry - .75 * overlap)
+            cue = max(0.0, vocal_entry - INCOMING_VOCAL_TARGET * overlap)
             reasons.append("Vocal entry has no nearby measured downbeat; tempo stretching is disabled.")
     delay, entry_at = _vocal_entry_timing(vocal_entry, cue, overlap, rate) if vocal_entry is not None else (0.0, None)
     clash = _clash(a, b, start, cue, overlap, rate, delay)
@@ -411,8 +409,8 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
             reasons.append("Unavoidable model-detected vocal overlap; complementary vocal-band ducking applied.")
     vocal_duck_db = (min(6.0, 2.0 + 4.0 * clash)
                      if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05 else 0.0)
-    bass = overlap * .7
-    nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .4 <= t - start <= overlap * .9]
+    bass = overlap * .55
+    nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .35 <= t - start <= overlap * .75]
     if nearby:
         bass = min(nearby, key=lambda t: abs(t - bass))
     discarded_music = _audible_seconds(a.get("energy", []), end, a["content_end"]) if not plain else 0.0
@@ -425,6 +423,7 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
             "mix_out_type": outro["type"] if outro else ("full_track_end" if plain else "content_end"),
             "mix_out_anchor": outro["time"] if outro else end,
             "discarded_music_seconds": round(discarded_music, 2), "reverb_wet": reverb_wet,
+            "incoming_reverb_wet": .2 if not plain else 0.0,
             "reverb_tail_seconds": .7 if reverb_wet else 0.0,
             "overlap_seconds": overlap, "overlap_beats": overlap * bpm_a / 60 if bpm_a else 0,
             "incoming_playback_rate": rate, "bass_handoff_seconds": bass, "vocal_overlap": clash,
@@ -498,9 +497,14 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
         entry = np.clip((x - .25) / .75, 0, 1)
         outgoing = outgoing * (1 - out_wet) + _filter_sweep(outgoing, [5000, 2000, 700, 250], "lowpass") * out_wet
         entry_sample = min(n - 1, round(n * .25))
-        filtered = _filter_sweep(incoming[entry_sample:], [5000, 8500, 13000, 18000], "lowpass")
+        filtered = _filter_sweep(incoming[entry_sample:], [650, 1800, 5500, 18000], "lowpass")
         incoming = incoming.copy()
+        incoming[:entry_sample] = 0
         incoming[entry_sample:] = filtered * (1 - entry[entry_sample:]) + incoming[entry_sample:] * entry[entry_sample:]
+        if plan.get("incoming_reverb_wet", 0):
+            vocal_at = plan.get("incoming_vocal_at")
+            clear_at = max(0.0, vocal_at - .25) if vocal_at is not None else seconds * .5
+            incoming += _reverb_send(incoming, plan["incoming_reverb_wet"], clear_at)[:n]
     if plan["tier"] in ("beatmatched", "dj-assisted"):
         low = signal.butter(2, 200, fs=SR, output="sos")
         a_low = signal.sosfilt(low, outgoing, axis=0).astype(np.float32)
@@ -517,7 +521,7 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
             depth = 1 - 10 ** (-plan["vocal_duck_db"] / 20)
             outgoing -= a_mid * (depth * np.sin(np.pi * x) * x)
             incoming -= b_mid * (depth * np.sin(np.pi * x) * (1 - x))
-    incoming_gain = np.sin(entry * np.pi / 2) if plan["tier"] != "plain-crossfade" else np.sin(x * np.pi / 2)
+    incoming_gain = np.sin(entry * np.pi / 2) ** .8 if plan["tier"] != "plain-crossfade" else np.sin(x * np.pi / 2)
     return outgoing * np.cos(x * np.pi / 2) + incoming * incoming_gain
 
 
