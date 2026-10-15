@@ -440,6 +440,30 @@ class EngineTests(unittest.TestCase):
             self.assertLessEqual(second["outgoing_end"], .25 + 1 / engine.SR)
             self.assertGreater(result["duration"], second["timeline_end"])
 
+    def test_echo_tails_can_cross_a_nearby_handoff_without_changing_sources(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tracks, data = [], []
+            for i, duration in enumerate((14, 8, 24)):
+                t = np.arange(engine.SR * duration) / engine.SR
+                audio = np.repeat((.08 * np.sin(2 * np.pi * (330 + i * 110) * t))[:, None], 2, axis=1)
+                path = root / f"{i}.wav"
+                sf.write(path, audio, engine.SR, subtype="PCM_24")
+                tracks.append({"id": str(i), "title": str(i), "path": path})
+                data.append(analysis(duration, bpm=0, confidence=0))
+            with patch.object(engine, "analyze", side_effect=data):
+                result = engine.render_mix(tracks, "automix", root / "out", root / "cache")
+            first, second = result["transitions"]
+            self.assertGreater(first["effects_end"], second["timeline_start"])
+            output, _ = sf.read(root / "out" / "mix.wav", dtype="float32")
+            restored = round((max(first["effects_end"], second["effects_end"]) + .1) * engine.SR)
+            source = engine.decode(tracks[2]["path"])
+            offset = restored - round(second["timeline_start"] * engine.SR)
+            attenuation = 10 ** (-result["gain_reduction_db"] / 20)
+            np.testing.assert_allclose(output[restored:], source[offset:] * attenuation, atol=2e-6)
+            self.assertTrue(np.isfinite(output).all())
+            self.assertLessEqual(float(np.max(np.abs(output))), 10 ** (-1 / 20) + 2e-7)
+
 
 if __name__ == "__main__":
     unittest.main()
