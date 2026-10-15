@@ -85,6 +85,27 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/api/latest").json()["automix"]["id"], ident)
         self.assertEqual(self.client.get("/api/jobs/not-a-valid-id").status_code, 404)
 
+    def test_transition_exports_are_individual_clamped_wav_clips(self):
+        ident = "c" * 32
+        folder = server.DATA / "mixes" / ident
+        folder.mkdir()
+        transitions = [{"timeline_start": 10, "timeline_end": 15},
+                       {"timeline_start": 50, "timeline_end": 55}]
+        (folder / "result.json").write_text(json.dumps({"transitions": transitions}))
+        samples = np.linspace(-0.5, 0.5, 80 * 8000, dtype="float32")
+        sf.write(folder / "mix.wav", samples, 8000, subtype="PCM_24")
+        for index, (start, end) in enumerate(((0, 35), (30, 75))):
+            response = self.client.get(f"/api/mixes/{ident}/transitions/{index}/audio")
+            self.assertEqual(response.status_code, 200)
+            self.assertIn(f"transition-{index + 1:02d}.wav", response.headers["content-disposition"])
+            clip, rate = sf.read(io.BytesIO(response.content))
+            self.assertEqual(rate, 8000)
+            self.assertEqual(len(clip), (end - start) * rate)
+            self.assertAlmostEqual(clip[0], samples[start * rate], places=4)
+            self.assertAlmostEqual(clip[-1], samples[end * rate - 1], places=4)
+        self.assertEqual(self.client.get(f"/api/mixes/{ident}/transitions/2/audio").status_code, 404)
+        self.assertEqual(self.client.get(f"/api/mixes/{ident}/transitions/-1/audio").status_code, 404)
+
     def test_recovered_baseline_reuses_original_uploads(self):
         ident = "b" * 32
         folder = server.DATA / "mixes" / ident
