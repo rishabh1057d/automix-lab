@@ -236,6 +236,50 @@ class EngineTests(unittest.TestCase):
         self.assertGreater(float(np.sqrt(np.mean((wet[audible] - dry[audible]) ** 2))), .001)
         np.testing.assert_allclose(wet[after_vocal], dry[after_vocal], atol=1e-7)
 
+    def test_bass_stays_present_until_incoming_audio_can_take_over(self):
+        t = np.arange(engine.SR * 4) / engine.SR
+        bass = np.repeat((.2 * np.sin(2 * np.pi * 70 * t))[:, None], 2, axis=1).astype(np.float32)
+        plan = {"tier": "safe-crossfade", "overlap_seconds": 4, "bass_crossover_hz": 180,
+                "bass_handoff_seconds": 2.2, "incoming_delay_seconds": 1.6}
+        outgoing, incoming = engine.blend_audio(bass, bass, plan, return_decks=True)
+        early = slice(round(.8 * engine.SR), round(1.2 * engine.SR))
+        self.assertGreater(float(np.sqrt(np.mean(outgoing[early] ** 2))), .12)
+        self.assertLess(float(np.sqrt(np.mean(incoming[early] ** 2))), .005)
+        self.assertGreaterEqual(plan["bass_handoff_start_seconds"], 1.6)
+        self.assertAlmostEqual(plan["bass_handoff_end_seconds"], 2.6)
+        np.testing.assert_allclose(outgoing[-1], [0, 0], atol=1e-7)
+        np.testing.assert_allclose(incoming[-1], bass[-1], atol=1e-7)
+
+    def test_echo_lingers_after_handoff_then_returns_to_original_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            t = np.arange(engine.SR * 24) / engine.SR
+            tracks = []
+            for i, frequency in enumerate((330, 550)):
+                audio = np.repeat((.08 * np.sin(2 * np.pi * frequency * t))[:, None], 2, axis=1)
+                path = root / f"{i}.wav"
+                sf.write(path, audio, engine.SR, subtype="PCM_24")
+                tracks.append({"id": str(i), "title": str(i), "path": path})
+            data = [analysis(24, bpm=0, confidence=0), analysis(24, bpm=0, confidence=0)]
+            with patch.object(engine, "analyze", side_effect=data):
+                result = engine.render_mix(tracks, "automix", root / "out", root / "cache")
+            output, _ = sf.read(root / "out" / "mix.wav", dtype="float32")
+            source = engine.decode(tracks[1]["path"])
+            transition = result["transitions"][0]
+            self.assertTrue(transition["echo"]["enabled"])
+            self.assertEqual(transition["echo"]["incoming_timing"], "fixed")
+            self.assertAlmostEqual(transition["effects_end"], transition["timeline_end"] + 6)
+            self.assertFalse(transition["rhythm_loop"]["enabled"])
+            attenuation = 10 ** (-result["gain_reduction_db"] / 20)
+            start = round(transition["timeline_start"] * engine.SR)
+            tail = slice(round((transition["timeline_end"] + .5) * engine.SR),
+                         round((transition["timeline_end"] + 1.5) * engine.SR))
+            dry_tail = source[tail.start - start:tail.stop - start] * attenuation
+            self.assertGreater(float(np.sqrt(np.mean((output[tail] - dry_tail) ** 2))), .001)
+            restored = round((transition["effects_end"] + .1) * engine.SR)
+            np.testing.assert_allclose(output[restored:], source[restored - start:] * attenuation, atol=2e-6)
+            self.assertLessEqual(float(np.max(np.abs(output))), 10 ** (-1 / 20) + 2e-7)
+
     def test_vocal_duck_is_audible_signal_processing(self):
         t = np.arange(4410) / engine.SR
         tone = np.column_stack((np.sin(2 * np.pi * 1000 * t),) * 2).astype(np.float32) * .2
@@ -395,6 +439,30 @@ class EngineTests(unittest.TestCase):
             self.assertGreater(second["outgoing_start"], 0)
             self.assertLessEqual(second["outgoing_end"], .25 + 1 / engine.SR)
             self.assertGreater(result["duration"], second["timeline_end"])
+
+    def test_echo_tails_can_cross_a_nearby_handoff_without_changing_sources(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            tracks, data = [], []
+            for i, duration in enumerate((14, 8, 24)):
+                t = np.arange(engine.SR * duration) / engine.SR
+                audio = np.repeat((.08 * np.sin(2 * np.pi * (330 + i * 110) * t))[:, None], 2, axis=1)
+                path = root / f"{i}.wav"
+                sf.write(path, audio, engine.SR, subtype="PCM_24")
+                tracks.append({"id": str(i), "title": str(i), "path": path})
+                data.append(analysis(duration, bpm=0, confidence=0))
+            with patch.object(engine, "analyze", side_effect=data):
+                result = engine.render_mix(tracks, "automix", root / "out", root / "cache")
+            first, second = result["transitions"]
+            self.assertGreater(first["effects_end"], second["timeline_start"])
+            output, _ = sf.read(root / "out" / "mix.wav", dtype="float32")
+            restored = round((max(first["effects_end"], second["effects_end"]) + .1) * engine.SR)
+            source = engine.decode(tracks[2]["path"])
+            offset = restored - round(second["timeline_start"] * engine.SR)
+            attenuation = 10 ** (-result["gain_reduction_db"] / 20)
+            np.testing.assert_allclose(output[restored:], source[offset:] * attenuation, atol=2e-6)
+            self.assertTrue(np.isfinite(output).all())
+            self.assertLessEqual(float(np.max(np.abs(output))), 10 ** (-1 / 20) + 2e-7)
 
 
 if __name__ == "__main__":

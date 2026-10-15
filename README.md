@@ -71,7 +71,7 @@ flowchart TD
 
 `engine.decode()` reads source audio, rejects unsupported channels or non-finite samples, resamples to **44.1 kHz**, and expands mono to stereo. Every cue, filter, beat position, and output sample therefore shares one timeline.
 
-Outside a transition and its possible reverb tail, the output uses the original decoded samples. The renderer does not unnecessarily process an entire track.
+Outside a transition and its six-second echo tail, the output uses the original decoded samples with the final shared output gain. The renderer does not unnecessarily process an entire track.
 
 ### 2. Analyze each track once
 
@@ -141,7 +141,9 @@ sequenceDiagram
   B->>M: From 25%: Song 2 fades in
   Note over M,B: Main verse enters near midpoint
   Note over M,B: Strong incoming low-pass opens; short room fades before vocals
-  M->>B: Continue Song 2 at native tempo
+  Note over M,B: At handoff end: stop new echo sends
+  M->>B: Echo decays for 6 seconds over Song 2
+  Note over M,B: Continue original Song 2 with no added effects
 ```
 
 ```text
@@ -154,15 +156,41 @@ Song 2 room            silent   short textured entry → clear before voice
 Song 2 voice           selected sustained phrase near midpoint
 ```
 
-For eligible AutoMix tiers:
+For AutoMix:
 
 - Song 1 uses an equal-power fade from the first overlap sample. Its low-pass closes from 5 kHz to 250 Hz; a 150 ms dry-to-filter ramp avoids a hard timbre jump.
 - Song 2 is silent for the first quarter, then rises more assertively under a 650 Hz low-pass that opens to full tone by the end. Its 20%-wet short room effect is audible during entry and clears before the planned vocal (or by the midpoint when no phrase is known).
-- Beatmatched/DJ-assisted plans exchange low frequencies around 55% of the overlap so Song 2's bass arrives earlier.
+- A separate bass layer below 180 Hz keeps Song 1's kick/bass present while its upper frequencies fade. A smooth, warm saturation gives the existing bass more body during the overlap and returns to its original tone at the boundary. It crosses to Song 2 around the planned bass handoff, after incoming audio is available, usually completing near 65% of the overlap. It uses the recordings' own bass rather than adding a synthesized note or boosting both bass lines together.
 - Unavoidable model-detected vocal collision can apply complementary vocal-band ducking, capped at 6 dB.
 - An eligible structural outro may add a 10%-wet, 0.7-second stereo room response earlier in the overlap. Its return is gone before the selected incoming vocals.
-- WSOLA is used only for an eligible small tempo adjustment, then ramps back to native tempo after the overlap.
-- One global attenuation pass limits the final output to **−1 dBFS sample peak**.
+- Whole-track WSOLA is used only for an eligible small tempo adjustment (at most 4%), then ramps back to native tempo after the overlap. An isolated percussion loop can separately be stretched by up to 12%.
+- A shared source gain provides the normal output headroom. A stereo-linked peak limiter acts only inside transitions and their tails, keeping output at **−1 dBFS sample peak** without making every later part of the song quieter because of a loud echo.
+
+#### Rhythm, bass, and echo as one handoff
+
+The room reverb gives the entrance space; the echo adds clearly repeated musical material that remains audible throughout the handoff. The pronounced profile uses an 85% echo send and 78% feedback. Sends take their audio **before** the track's volume and closing low-pass fades, so fading Song 1 does not also erase its echo. Song 2's send opens from 25% and reaches full strength around 60%, using the same selected cue and padded vocal timing as the main track. Repeats alternate emphasis between the ears and follow each deck's measured local beat spacing. If a reliable local pulse is unavailable, that deck uses a 400 ms delay and the inspector reports fixed timing. An 80 ms entrance ramp and preceding Song 1 audio seed the echo without an abrupt click. The repeats are filtered to 200 Hz–6.5 kHz so low bass remains on the dedicated bass layer. Known incoming vocals lower the echo return by 3 dB with smooth attack/release; they do not switch it off.
+
+When the evidence supports a rhythm blend, the renderer finds a clean measured bar within the final 30 seconds before Song 1's selected exit. UMX-HQ must cover the entire bar without sustained vocal activity, and both source and target bars must have regular measured beats. Harmonic/percussive separation reduces pitched material, and WSOLA fits the short percussion phrase to Song 2's bar within ±12%. It starts on an incoming downbeat, repeats beneath Song 2 at a noticeable level, and fades out during the final quarter. Missing vocal coverage, unreliable beats, insufficient percussion, or a larger tempo mismatch produces an explicit fallback reason. The renderer never invents a beat grid or loops an unverified vocal phrase.
+
+```mermaid
+flowchart LR
+  A[Song 1] --> T[Filtered track fades]
+  B[Song 2] --> T
+  A --> LOW[Existing kick/bass below 180 Hz]
+  B --> LOW
+  A --> BAR[Covered vocal-free measured bar]
+  BAR --> P[Extract percussion; fit to Song 2 bar]
+  T --> MIX[Dry handoff]
+  LOW --> MIX
+  P --> MIX
+  T --> E[Beat-timed stereo echo]
+  P --> E
+  E --> W[Wet layer; gently duck during incoming vocals]
+  MIX --> OUT[Final rendered timeline]
+  W --> OUT
+```
+
+At the overlap boundary, fresh sends stop while the existing repeats ring over Song 2. A six-second fade brings the echo to exactly zero. Effects are added to absolute positions in the final mix, separate from the original source buffers, so an earlier echo is never fed back into a later transition. Short final recordings clamp the tail to the remaining mix duration. The timeline shows the echo tail, and both WAV export options contain it; a transition clip's existing 20 seconds of following audio includes the full normal tail.
 
 ### AutoMix versus Plain crossfade
 
@@ -171,8 +199,11 @@ For eligible AutoMix tiers:
 | Cue selection | Structural exit + pair-scored incoming cue | Track endings and beginnings |
 | Length | 12–16 seconds where possible | 6 seconds, shorter for tiny files |
 | Beat alignment / WSOLA | Evidence-gated | Never |
-| Filters, bass handoff, vocal duck | Eligible tiers only | No |
+| Filters and bass handoff | All AutoMix tiers | No |
+| Vocal duck | Model evidence and eligible tiers | No |
 | Reverb | Incoming room during entry; extra outgoing room on eligible outros | No |
+| Echo | Prominent repeats plus a 6-second fading tail | No |
+| Rhythm loop | Covered clean percussion bar, measured timing, ±12% loop stretch | No |
 
 Plain mode is not a failure path. It is the reference listeners use to decide whether the additional transition logic helped a specific pair.
 
@@ -185,6 +216,7 @@ sources.json  queue metadata and local source paths
 mix.wav       rendered 24-bit PCM stereo audio
 plan.json     transition decisions, waveform, and track analysis
 result.json   plan plus job id, timestamp, and playlist key for the UI
+transition-01.wav  short audition export, cached on first download
 ```
 
 A transition entry contains values such as:
@@ -206,11 +238,17 @@ A transition entry contains values such as:
   "incoming_delay_seconds": 0,
   "incoming_vocal_at": 6.0,
   "incoming_fade_start": 0.25,
+  "bass_crossover_hz": 180,
+  "echo": {"enabled": true, "profile": "pronounced", "wet": 0.85, "feedback": 0.78, "tail_seconds": 6},
+  "rhythm_loop": {"enabled": false, "reason": "No covered instrumental bar with regular measured beats."},
+  "timeline_start": 208.07,
+  "timeline_end": 220.07,
+  "effects_end": 226.07,
   "reasons": ["human-readable planning evidence"]
 }
 ```
 
-Times are seconds of the source recording unless a field begins with `timeline_`, which is measured in the rendered WAV. `source_resume` and `output_resume` describe the WSOLA-to-native-tempo mapping used for later handoffs.
+Source cue and exit times refer to the original recording. `timeline_start`, `timeline_end`, and `effects_end` refer to the rendered WAV; overlap-relative entry, bass, and delay values are measured from the handoff's start. `source_resume` and `output_resume` describe the WSOLA-to-native-tempo mapping used for later handoffs. New effect metadata is additive: old saved mixes remain playable, and rebuilding creates a fresh render with the current effects.
 
 ## Directory structure
 
@@ -218,6 +256,7 @@ Times are seconds of the source recording unless a field begins with `timeline_`
 AutoMix-Lab/
 ├── app.py                    FastAPI server, validation, jobs, and local API
 ├── engine.py                 Decode, analysis, planning, DSP, and WAV renderer
+├── transition_effects.py     Measured percussion loops and finite stereo echo
 ├── vocal_model.py            Pinned UMX-HQ download, verification, and inference
 ├── docker-compose.yml        Local service plus persistent ./data mount
 ├── Dockerfile                Reproducible Python/CPU-model runtime image
@@ -229,6 +268,7 @@ AutoMix-Lab/
 ├── tests/
 │   ├── test_api.py           Validation, jobs, range responses, and persistence
 │   ├── test_engine.py        Planner, DSP, rendering, timeline, and safety tests
+│   ├── test_transition_effects.py  Echo spacing/decay and rhythm-loop evidence
 │   └── test_vocal_model.py   Vocal-model file and inference contract tests
 ├── data/                     Local runtime state; ignored by Git
 │   ├── uploads/              User-provided recordings
@@ -251,6 +291,7 @@ AutoMix-Lab/
 | `GET /api/jobs/{id}` | Poll job progress |
 | `GET /api/mixes/{id}` | Read a completed result |
 | `GET /api/mixes/{id}/audio` | Stream WAV with range support |
+| `GET /api/mixes/{id}/transitions/{index}/audio` | Download one transition WAV, with 20 seconds before/after; index starts at zero |
 | `GET /api/mixes/{id}/plan` | Download the plan |
 | `GET /api/latest` | Restore latest AutoMix/Plain pair for the playlist |
 
@@ -263,7 +304,7 @@ docker compose run --rm automix python -m unittest discover -s tests -q
 node --check static/app.js
 ```
 
-Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 12 second floor, no incoming signal before 25%, filter sweeps, incoming room clearance, vocal collision policy, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
+Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 12 second floor, no incoming signal before 25%, filter sweeps, incoming room clearance, vocal collision policy, bass continuity, echo timing/stereo decay, source restoration after the tail, rhythm-loop evidence, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
 
 When improving the transition engine:
 
@@ -277,7 +318,7 @@ When improving the transition engine:
 - Queue order is user-supplied. No next-song recommendation is implemented.
 - UMX-HQ activity is source-separation evidence, not lyric transcription or a perfect singer-onset detector.
 - Beats can be wrong on live material, tempo changes, sparse percussion, or unusual meters; the planner then falls back.
-- The engine does not infer full musical phrases or harmonic key.
+- The engine selects measured percussion bars, not complete lyrical phrases or harmonic key. It does not deliberately combine lead vocals or create a new bass line.
 - WSOLA is deliberately limited and can still produce artifacts on unsuitable material.
 - The output ceiling is sample peak, not true peak or loudness normalization.
 - Audio is decoded into memory, so this is designed for small local queues. Chunked rendering is the future path for long recordings.
