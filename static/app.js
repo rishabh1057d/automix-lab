@@ -207,7 +207,15 @@ async function setMode(mode, compare = true) {
   $("transition-select").value = state.transition;
   $("audition-buttons").replaceChildren();
   result.transitions.forEach((transition, index) => { const button = document.createElement("button"); button.textContent = `↗ Hear transition ${String(index + 1).padStart(2, "0")}`; button.onclick = () => audition(index); $("audition-buttons").append(button); });
-  $("transition-labels").innerHTML = result.transitions.map((transition, index) => `<div class="transition-label" style="left:${100 * transition.timeline_start / result.duration}%;width:${100 * (transition.timeline_end - transition.timeline_start) / result.duration}%"><span>T${index + 1}</span></div>`).join("");
+  $("transition-labels").innerHTML = result.transitions.map((transition, index) => {
+    const duration = Number(result.duration);
+    const start = Math.max(0, Number(transition.timeline_start));
+    const end = Math.min(duration, Number(transition.timeline_end));
+    if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) return "";
+    const effectsEnd = Math.min(duration, Number(transition.effects_end));
+    const tail = transition.echo?.enabled && Number.isFinite(effectsEnd) && effectsEnd > end ? `<div class="transition-label echo-tail" style="left:${100 * end / duration}%;width:${100 * (effectsEnd - end) / duration}%" title="Echo tail: ${time(end)} to ${time(effectsEnd)}"><span>Echo ${index + 1}</span></div>` : "";
+    return `${tail}<div class="transition-label" style="left:${100 * start / duration}%;width:${100 * (end - start) / duration}%"><span>T${index + 1}</span></div>`;
+  }).join("");
   $("export-audio").replaceChildren();
   result.transitions.forEach((transition, index) => { const link = document.createElement("a"); link.className = "small-button"; link.href = `/api/mixes/${encodeURIComponent(result.id)}/transitions/${index}/audio`; link.download = `automix-lab-${mode}-transition-${String(index + 1).padStart(2, "0")}.wav`; link.textContent = `↓ Transition ${String(index + 1).padStart(2, "0")} WAV`; $("export-audio").append(link); });
   [["export-full", "audio", `automix-lab-${mode}-full.wav`], ["export-plan", "plan", `automix-lab-${mode}.json`]].forEach(([id, route, filename]) => { $(id).href = `/api/mixes/${encodeURIComponent(result.id)}/${route}`; $(id).download = filename; $(id).classList.remove("disabled"); $(id).setAttribute("aria-disabled", "false"); });
@@ -281,14 +289,19 @@ function renderInspector() {
   $("transition-explanation").textContent = reasons.join(" ") || (state.mode === "plain" ? "A simple equal-power fade lets you compare this queue with the beat-aware AutoMix version." : `The incoming track starts at ${Number(transition.incoming_cue).toFixed(1)} seconds and blends in over ${Number(transition.overlap_seconds).toFixed(1)} seconds.`);
   const confidence = Math.round((Number(transition.confidence) || 0) * 100);
   const vocal = Math.round((Number(transition.vocal_overlap) || 0) * 100);
-  const bassApplied = /beatmatched|dj.assisted/i.test(transition.tier);
+  const bassApplied = Number(transition.bass_crossover_hz) > 0 || /beatmatched|dj.assisted/i.test(transition.tier);
   const vocalEvidence = transition.vocal_evidence === "model" ? "UMX-HQ model" : transition.vocal_evidence || "unavailable";
   const duck = Number(transition.vocal_duck_db) || 0;
   const skipped = transition.discarded_music_seconds == null ? "" : ` · ${Number(transition.discarded_music_seconds).toFixed(1)}s audible music skipped`;
   const exit = transition.mix_out_type === "full_track_end" ? "Plain fade at file end" : `${transition.mix_out_type === "sustained_outro_drop" ? "Outro" : "End-region"} exit at ${Number(transition.outgoing_end).toFixed(1)}s${skipped}`;
   const reverb = [Number(transition.reverb_wet) ? `Outgoing room ${Math.round(Number(transition.reverb_wet) * 100)}% · ${Number(transition.reverb_tail_seconds).toFixed(1)}s tail` : "", Number(transition.incoming_reverb_wet) ? `Incoming room ${Math.round(Number(transition.incoming_reverb_wet) * 100)}%` : ""].filter(Boolean).join(" · ") || "No added reverb";
   const entry = transition.vocal_entry == null ? "No sustained vocal entry found" : `Main verse ${Number(transition.vocal_entry).toFixed(1)}s (${transition.vocal_entry_source}) · heard ${Number(transition.incoming_vocal_at).toFixed(1)}s into handoff`;
-  $("inspector-detail").textContent = `${entry} · ${exit} · ${reverb} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied"}`;
+  const echo = transition.echo;
+  const loop = transition.rhythm_loop;
+  const echoTiming = echo?.outgoing_timing === "measured" && echo?.incoming_timing === "measured" ? "on beat" : echo?.outgoing_timing === "measured" || echo?.incoming_timing === "measured" ? "with beat and fixed timing" : "with fixed timing";
+  const effects = [echo?.enabled ? `Echo ${echoTiming} · ${Number(echo.tail_seconds).toFixed(1)}s tail` : "", loop ? loop.enabled ? "Song 1 rhythm blended into Song 2" : `Rhythm blend skipped: ${loop.reason || "no suitable phrase found"}` : ""].filter(Boolean).join(" · ");
+  const bass = bassApplied && transition.bass_handoff_start_seconds != null && transition.bass_handoff_end_seconds != null ? `${Number(transition.bass_handoff_start_seconds).toFixed(1)}–${Number(transition.bass_handoff_end_seconds).toFixed(1)}s into fade` : bassApplied && transition.bass_handoff_seconds != null ? `${Number(transition.bass_handoff_seconds).toFixed(1)}s into fade` : "not applied";
+  $("inspector-detail").textContent = `${entry} · ${exit} · ${reverb}${effects ? ` · ${effects}` : ""} · Confidence ${confidence}% · Vocal overlap ${vocal}% (${vocalEvidence}) · Vocal duck ${duck ? `${duck.toFixed(1)} dB` : "not needed"} · Bass handoff ${bass}`;
   drawAll();
 }
 

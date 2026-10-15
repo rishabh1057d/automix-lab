@@ -13,6 +13,8 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
+from transition_effects import local_pulse, ping_pong_echo, render_rhythm_loop
+
 SR = 44100
 VERSION = "analysis-8-vocal-entry-45s"
 VOCAL_ACTIVE = .35
@@ -412,7 +414,9 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
     bass = overlap * .55
     nearby = [(t - start) for t in a.get("downbeats", []) if overlap * .35 <= t - start <= overlap * .75]
     if nearby:
-        bass = min(nearby, key=lambda t: abs(t - bass))
+        measured = min(nearby, key=lambda t: abs(t - bass))
+        if abs(measured - bass) <= min(.5, .1 * overlap):
+            bass = measured
     discarded_music = _audible_seconds(a.get("energy", []), end, a["content_end"]) if not plain else 0.0
     reverb_wet = .1 if outro and (tier in ("beatmatched", "dj-assisted") or
                                  (vocal_entry is not None and ca >= .15 and cb >= .15 and
@@ -431,6 +435,9 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
             "vocal_entry": vocal_entry, "vocal_entry_source": entry_source,
             "incoming_delay_seconds": delay, "incoming_vocal_at": entry_at,
             "incoming_fade_start": .25 if not plain else 0.0,
+            "bass_crossover_hz": 180 if not plain else 0,
+            "echo": {"enabled": not plain, "wet": .45, "feedback": .65,
+                     "tail_seconds": 6.0, "vocal_duck_db": 3 if _model_vocals(b) and not plain else 0},
             "confidence": min(ca, cb), "reasons": reasons}
 
 
@@ -486,7 +493,7 @@ def _filter_sweep(audio: np.ndarray, cutoffs: list[float], kind: str) -> np.ndar
     return result
 
 
-def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.ndarray:
+def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict, *, return_decks=False):
     n = min(len(outgoing), len(incoming))
     outgoing, incoming = outgoing[:n], incoming[:n]
     x = np.linspace(0, 1, n, dtype=np.float32)[:, None]
@@ -505,7 +512,7 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
             vocal_at = plan.get("incoming_vocal_at")
             clear_at = max(0.0, vocal_at - .25) if vocal_at is not None else seconds * .5
             incoming += _reverb_send(incoming, plan["incoming_reverb_wet"], clear_at)[:n]
-    if plan["tier"] in ("beatmatched", "dj-assisted"):
+    if plan["tier"] in ("beatmatched", "dj-assisted") and not plan.get("bass_crossover_hz"):
         low = signal.butter(2, 200, fs=SR, output="sos")
         a_low = signal.sosfilt(low, outgoing, axis=0).astype(np.float32)
         b_low = signal.sosfilt(low, incoming, axis=0).astype(np.float32)
@@ -514,15 +521,56 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict) -> np.nd
         # Smooth bass exchange while preserving the exact full-band signal at both endpoints.
         outgoing = outgoing - a_low * bass_gain
         incoming = incoming - b_low * (1 - bass_gain)
-        if plan.get("vocal_duck_db", 0) > 0:
-            middle = signal.butter(2, [250, 4000], btype="bandpass", fs=SR, output="sos")
-            a_mid = signal.sosfilt(middle, outgoing, axis=0).astype(np.float32)
-            b_mid = signal.sosfilt(middle, incoming, axis=0).astype(np.float32)
-            depth = 1 - 10 ** (-plan["vocal_duck_db"] / 20)
-            outgoing -= a_mid * (depth * np.sin(np.pi * x) * x)
-            incoming -= b_mid * (depth * np.sin(np.pi * x) * (1 - x))
+    if plan["tier"] in ("beatmatched", "dj-assisted") and plan.get("vocal_duck_db", 0) > 0:
+        middle = signal.butter(2, [250, 4000], btype="bandpass", fs=SR, output="sos")
+        a_mid = signal.sosfilt(middle, outgoing, axis=0).astype(np.float32)
+        b_mid = signal.sosfilt(middle, incoming, axis=0).astype(np.float32)
+        depth = 1 - 10 ** (-plan["vocal_duck_db"] / 20)
+        outgoing -= a_mid * (depth * np.sin(np.pi * x) * x)
+        incoming -= b_mid * (depth * np.sin(np.pi * x) * (1 - x))
     incoming_gain = np.sin(entry * np.pi / 2) ** .8 if plan["tier"] != "plain-crossfade" else np.sin(x * np.pi / 2)
-    return outgoing * np.cos(x * np.pi / 2) + incoming * incoming_gain
+    outgoing_gain = np.cos(x * np.pi / 2)
+    if plan["tier"] != "plain-crossfade" and plan.get("bass_crossover_hz"):
+        low = signal.butter(2, plan["bass_crossover_hz"], fs=SR, output="sos")
+        a_low = signal.sosfiltfilt(low, outgoing, axis=0, padlen=min(12, n - 1)).astype(np.float32)
+        b_low = signal.sosfiltfilt(low, incoming, axis=0, padlen=min(12, n - 1)).astype(np.float32)
+        available = max(.25 * seconds, plan.get("incoming_audible_at", plan.get("incoming_delay_seconds", 0)))
+        center = max(plan["bass_handoff_seconds"], available + .05 * seconds)
+        end = min(seconds, center + .1 * seconds)
+        start = min(end - 1 / SR, max(available, center - .1 * seconds))
+        bass = np.clip((x * seconds - start) / max(1 / SR, end - start), 0, 1)
+        plan.update(bass_handoff_start_seconds=start, bass_handoff_end_seconds=end)
+        outgoing = (outgoing - a_low) * outgoing_gain + a_low * np.cos(bass * np.pi / 2)
+        incoming = (incoming - b_low) * incoming_gain + b_low * np.sin(bass * np.pi / 2)
+    else:
+        outgoing = outgoing * outgoing_gain
+        incoming = incoming * incoming_gain
+    return (outgoing, incoming) if return_decks else outgoing + incoming
+
+
+def _echo_vocal_gain(analysis: dict, plan: dict, frames: int) -> np.ndarray:
+    """Duck only the wet return, using a small control-rate envelope rather than audio-rate Python."""
+    depth = plan["echo"]["vocal_duck_db"]
+    if not depth:
+        return np.ones(frames, np.float32)
+    times = np.arange(math.ceil(frames / SR * 100) + 1) / 100
+    delay, overlap = plan["incoming_delay_seconds"], plan["overlap_seconds"]
+    if plan["source_resume"]:
+        positions = np.interp(times, [delay, delay + overlap, plan["output_resume"]],
+                              [0, overlap * plan["incoming_playback_rate"], plan["source_resume"]])
+        after = times >= plan["output_resume"]
+        positions[after] = plan["source_resume"] + times[after] - plan["output_resume"]
+    else:
+        positions = np.maximum(0, times - delay)
+    active = (_activity(analysis, plan["incoming_cue"] + positions) >= VOCAL_ACTIVE) & (times >= delay)
+    targets = np.where(active, 10 ** (-depth / 20), 1.0)
+    envelope = np.empty_like(targets)
+    value = 1.0
+    for i, target in enumerate(targets):
+        coefficient = math.exp(-.01 / (.08 if target < value else .25))
+        value = target + coefficient * (value - target)
+        envelope[i] = value
+    return np.interp(np.arange(frames) / SR, times, envelope).astype(np.float32)
 
 
 @lru_cache(maxsize=1)
@@ -566,7 +614,9 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
                                 lambda msg, i=i: notify("analyzing", int(i / len(tracks) * 55), msg)))
     notify("planning", 55, "Selecting structural cues and transition tiers")
     current = decode(Path(tracks[0]["path"]))
+    original_current = current
     segments, transitions = [], []
+    effect_beds = []
     timeline = 0.0
     source_offset = 0.0
     track_details = [dict(id=t["id"], title=t["title"], **a) for t, a in zip(tracks, analyses)]
@@ -607,28 +657,59 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         plan["outgoing_end"] = source_offset + end / SR
         plan["overlap_beats"] = n / SR * analyses[i]["bpm"] / 60 if analyses[i]["bpm"] else 0.0
         plan["bass_handoff_seconds"] = min(n / SR, plan["bass_handoff_seconds"])
+        plan["incoming_audible_at"] = plan["incoming_delay_seconds"] + max(
+            0.0, analyses[i + 1]["audible_start"] - plan["incoming_cue"]) / plan["incoming_playback_rate"]
         transition_start = timeline + start / SR
         plan.update(index=i, outgoing_title=tracks[i]["title"], incoming_title=tracks[i + 1]["title"],
                     timeline_start=transition_start, timeline_end=transition_start + n / SR,
                     overlap_seconds=n / SR, **mapping)
-        blended = blend_audio(current[start:end], incoming[:n], plan)
+        outgoing_deck, incoming_deck = blend_audio(current[start:end], incoming[:n], plan, return_decks=True)
+        blended = outgoing_deck + incoming_deck
         next_audio = incoming[n:]
+        if plan["echo"]["enabled"]:
+            rhythm = render_rhythm_loop(original_current, analyses[i], analyses[i + 1], plan)
+            blended += rhythm
+            outgoing_pulse = local_pulse(analyses[i], plan["outgoing_start"], plan["outgoing_end"])
+            incoming_pulse = local_pulse(analyses[i + 1], plan["incoming_cue"],
+                                         min(analyses[i + 1]["content_end"], plan["incoming_cue"] +
+                                             max(0, n / SR - plan["incoming_delay_seconds"]) * plan["incoming_playback_rate"]),
+                                         plan["incoming_playback_rate"])
+            settings = plan["echo"]
+            settings.update(outgoing_delay_seconds=outgoing_pulse or .4, incoming_delay_seconds=incoming_pulse or .4,
+                            outgoing_timing="measured" if outgoing_pulse else "fixed",
+                            incoming_timing="measured" if incoming_pulse else "fixed")
+            history = current[max(0, start - round(settings["tail_seconds"] * SR)):start]
+            wet = ping_pong_echo(outgoing_deck, settings["outgoing_delay_seconds"], history,
+                                 settings["wet"], settings["feedback"], settings["tail_seconds"])
+            wet += ping_pong_echo(incoming_deck + rhythm, settings["incoming_delay_seconds"],
+                                  wet=settings["wet"], feedback=settings["feedback"], tail_seconds=settings["tail_seconds"])
+            wet *= _echo_vocal_gain(analyses[i + 1], plan, len(wet))[:, None]
+            effect_beds.append((round(transition_start * SR), wet))
+            plan["effects_end"] = plan["timeline_end"] + settings["tail_seconds"]
+            plan["reasons"].append("Stereo echoes follow measured beats where available and decay for six seconds after the handoff; bass transfers on its own envelope.")
+        else:
+            plan["rhythm_loop"] = {"enabled": False, "reason": "Plain comparison uses no rhythm loop."}
         if plan["reverb_wet"]:
             clear_at = max(0.0, plan["incoming_vocal_at"] - .25) if plan["incoming_vocal_at"] is not None else n / SR
             room = _reverb_send(current[start:end], plan["reverb_wet"], clear_at)
-            blended += room[:n]
-            next_audio = next_audio.copy()
-            tail = min(len(next_audio), len(room) - n)
-            next_audio[:tail] += room[n:n + tail]
+            effect_beds.append((round(transition_start * SR), room))
         segments.extend((current[:start], blended))
         timeline += end / SR
         current = next_audio
+        original_current = incoming_full
         source_offset = plan["incoming_cue"] + mapping["source_resume"] - mapping["output_resume"] + n / SR
         track_details[i + 1].update(timeline_start=transition_start, incoming_cue=plan["incoming_cue"], **mapping)
         transitions.append(plan)
     segments.append(current)
     notify("rendering", 94, "Writing audio and waveform")
     audio = np.concatenate(segments)
+    for offset, bed in effect_beds:
+        count = min(len(bed), len(audio) - offset)
+        if count > 0:
+            audio[offset:offset + count] += bed[:count]
+    for transition in transitions:
+        if "effects_end" in transition:
+            transition["effects_end"] = min(len(audio) / SR, transition["effects_end"])
     peak = float(np.max(np.abs(audio)))
     ceiling = 10 ** (-1 / 20)
     attenuation = min(1.0, ceiling / max(peak, 1e-12))
