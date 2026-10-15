@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from transition_effects import SR, limit_effect_peak, local_pulse, ping_pong_echo, render_rhythm_loop
+from transition_effects import SR, limit_effect_peak, local_pulse, progressive_reverb, render_rhythm_loop
 
 
 def evidence(duration=40, pulse=.5):
@@ -63,41 +63,66 @@ class TransitionEffectsTests(unittest.TestCase):
         self.assertIsNone(local_pulse({"beats": [0, .3, .9, 1.1, 2, 3]}, 0, 3))
         self.assertIsNone(local_pulse({"bpm": 120}, 0, 20))
 
-    def test_echo_spacing_stereo_feedback_and_exact_tail(self):
-        send = np.zeros((SR, 2), dtype=np.float32)
-        send[round(.1 * SR)] = 1
-        wet = ping_pong_echo(send, .25, feedback=.65)
-        self.assertEqual(wet.shape, (7 * SR, 2))
-        energies = []
-        for repeat, time in enumerate((.35, .6, .85)):
-            chunk = wet[round(time * SR):round((time + .02) * SR)]
-            energies.append(np.sum(chunk ** 2, axis=0))
-            dominant, quiet = (0, 1) if repeat % 2 == 0 else (1, 0)
-            self.assertGreater(energies[-1][dominant], energies[-1][quiet] * 15)
-        self.assertAlmostEqual(float(energies[1].sum() / energies[0].sum()), .65 ** 2, places=3)
-        self.assertLess(float(np.max(np.abs(wet[:round(.35 * SR)]))), 1e-7)
-        self.assertTrue(np.any(wet[SR:2 * SR]))
-        self.assertTrue(np.array_equal(wet[-1], [0, 0]))
-        self.assertEqual(wet.dtype, np.float32)
+    def test_reverb_impulses_decay_progressively_longer_without_discrete_repeats(self):
+        ratios = []
+        for time in (.5, 4, 7.5):
+            send = np.zeros((8 * SR, 2), dtype=np.float32)
+            send[round(time * SR)] = 1
+            wet = progressive_reverb(send)
+            onset = round((time + .03) * SR)
+            first = wet[onset:onset + round(.25 * SR)]
+            later = wet[onset + round(.5 * SR):onset + SR]
+            ratios.append(float(np.sum(later ** 2) / np.sum(first ** 2)))
+            self.assertLess(float(np.max(np.abs(wet[:onset]))), 1e-7)
+            self.assertGreater(np.mean(np.abs(first) > 1e-7), .99)
+            self.assertLess(abs(float(np.corrcoef(first.T)[0, 1])), .1)
+            self.assertEqual(wet.shape, (14 * SR, 2))
+            np.testing.assert_array_equal(wet[-1], [0, 0])
+            self.assertEqual(wet.dtype, np.float32)
+        self.assertGreater(ratios[1], 3 * ratios[0])
+        self.assertGreater(ratios[2], 3 * ratios[1])
 
-    def test_history_seeds_early_echo_and_silence_is_finite(self):
-        history = np.zeros((SR, 2), dtype=np.float32)
-        history[-round(.15 * SR)] = 1
-        send = np.zeros((SR, 2), dtype=np.float32)
-        seeded = ping_pong_echo(send, .25, history)
-        self.assertGreater(float(np.max(np.abs(seeded[round(.09 * SR):round(.13 * SR)]))), .01)
-        self.assertFalse(np.any(ping_pong_echo(send, .25)))
-        self.assertTrue(np.isfinite(ping_pong_echo(np.zeros((1, 2), dtype=np.float32), .25)).all())
-        self.assertEqual(ping_pong_echo(np.empty((0, 2), dtype=np.float32), .25).shape, (6 * SR, 2))
-
-    def test_echo_send_cutoff_is_tapered_without_changing_source(self):
+    def test_reverb_preserves_source_has_finite_tail_and_deterministic_output(self):
         time = np.arange(SR) / SR
         send = np.repeat((.1 * np.cos(2 * np.pi * 1000 * time))[:, None], 2, axis=1).astype(np.float32)
         original = send.copy()
-        wet = ping_pong_echo(send, 1.5, wet=.45, feedback=0)
-        self.assertTrue(np.array_equal(send, original))
-        self.assertLess(float(np.max(np.abs(wet[round(2.499 * SR):round(2.5 * SR)]))), .003)
-        self.assertGreater(float(np.max(np.abs(wet[round(2.46 * SR):round(2.47 * SR)]))), .02)
+        wet = progressive_reverb(send)
+        np.testing.assert_array_equal(send, original)
+        np.testing.assert_array_equal(wet, progressive_reverb(send))
+        self.assertTrue(np.isfinite(wet).all())
+        self.assertGreater(float(np.sum(wet[SR:2 * SR] ** 2)), 0)
+        np.testing.assert_array_equal(wet[-1], [0, 0])
+        self.assertLess(float(np.max(np.abs(wet[-round(.01 * SR):]))), 1e-6)
+        endpoints = np.zeros_like(send)
+        endpoints[[0, -1]] = 1
+        self.assertFalse(np.any(progressive_reverb(endpoints)))
+
+    def test_reverb_empty_tiny_silent_and_zero_wet_inputs(self):
+        for n in (0, 1, 12, SR):
+            for value in (0, .1) if n < SR else (0,):
+                send = np.full((n, 2), value, dtype=np.float32)
+                wet = progressive_reverb(send)
+                self.assertEqual(wet.shape, (n + 6 * SR, 2))
+                self.assertTrue(np.isfinite(wet).all())
+                np.testing.assert_array_equal(wet[-1], [0, 0])
+                if not value:
+                    self.assertFalse(np.any(wet))
+        send = np.ones((100, 2), dtype=np.float32)
+        self.assertFalse(np.any(progressive_reverb(send, wet=0)))
+        self.assertEqual(progressive_reverb(send, tail_seconds=0).shape, send.shape)
+
+    def test_reverb_rejects_nonfinite_mono_and_invalid_parameters(self):
+        for send in (np.zeros(SR), np.zeros((10, 1)), np.zeros((2, 2, 2)),
+                     np.array([[np.nan, 0]]), np.array([[0, np.inf]])):
+            with self.subTest(shape=send.shape), self.assertRaises(ValueError):
+                progressive_reverb(send)
+        send = np.zeros((1, 2), dtype=np.float32)
+        for parameters in ({"wet": -.1}, {"wet": 1.1}, {"wet": np.nan},
+                           {"decay_start_seconds": 0}, {"decay_start_seconds": 4},
+                           {"decay_end_seconds": 7}, {"decay_end_seconds": np.inf},
+                           {"tail_seconds": -1}, {"tail_seconds": 7}, {"tail_seconds": np.nan}):
+            with self.subTest(parameters=parameters), self.assertRaises(ValueError):
+                progressive_reverb(send, **parameters)
 
     def test_instrumental_bar_is_aligned_and_stretched_with_exact_clearance(self):
         a, b = evidence(), evidence(pulse=.525)

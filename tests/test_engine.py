@@ -250,7 +250,7 @@ class EngineTests(unittest.TestCase):
         np.testing.assert_allclose(outgoing[-1], [0, 0], atol=1e-7)
         np.testing.assert_allclose(incoming[-1], bass[-1], atol=1e-7)
 
-    def test_echo_lingers_after_handoff_then_returns_to_original_source(self):
+    def test_reverb_lingers_after_handoff_then_returns_to_original_source(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             t = np.arange(engine.SR * 24) / engine.SR
@@ -266,8 +266,10 @@ class EngineTests(unittest.TestCase):
             output, _ = sf.read(root / "out" / "mix.wav", dtype="float32")
             source = engine.decode(tracks[1]["path"])
             transition = result["transitions"][0]
-            self.assertTrue(transition["echo"]["enabled"])
-            self.assertEqual(transition["echo"]["incoming_timing"], "fixed")
+            self.assertNotIn("echo", transition)
+            self.assertTrue(transition["reverb"]["enabled"])
+            self.assertEqual(transition["reverb"]["decay_start_seconds"], .7)
+            self.assertEqual(transition["reverb"]["decay_end_seconds"], 3.5)
             self.assertAlmostEqual(transition["effects_end"], transition["timeline_end"] + 6)
             self.assertFalse(transition["rhythm_loop"]["enabled"])
             attenuation = 10 ** (-result["gain_reduction_db"] / 20)
@@ -440,7 +442,7 @@ class EngineTests(unittest.TestCase):
             self.assertLessEqual(second["outgoing_end"], .25 + 1 / engine.SR)
             self.assertGreater(result["duration"], second["timeline_end"])
 
-    def test_echo_tails_can_cross_a_nearby_handoff_without_changing_sources(self):
+    def test_reverb_tails_can_cross_a_nearby_handoff_without_changing_sources(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             tracks, data = [], []

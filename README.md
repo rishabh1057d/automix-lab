@@ -71,7 +71,7 @@ flowchart TD
 
 `engine.decode()` reads source audio, rejects unsupported channels or non-finite samples, resamples to **44.1 kHz**, and expands mono to stereo. Every cue, filter, beat position, and output sample therefore shares one timeline.
 
-Outside a transition and its six-second echo tail, the output uses the original decoded samples with the final shared output gain. The renderer does not unnecessarily process an entire track.
+Outside a transition and its six-second reverb tail, the output uses the original decoded samples with the final shared output gain. The renderer does not unnecessarily process an entire track.
 
 ### 2. Analyze each track once
 
@@ -141,8 +141,8 @@ sequenceDiagram
   B->>M: From 25%: Song 2 fades in
   Note over M,B: Main verse enters near midpoint
   Note over M,B: Strong incoming low-pass opens; short room fades before vocals
-  Note over M,B: At handoff end: stop new echo sends
-  M->>B: Echo decays for 6 seconds over Song 2
+  Note over M,B: Reverb decay grows from 0.7 to 3.5 seconds
+  M->>B: Stop new sends; reverb fades for 6 seconds over Song 2
   Note over M,B: Continue original Song 2 with no added effects
 ```
 
@@ -164,11 +164,13 @@ For AutoMix:
 - Unavoidable model-detected vocal collision can apply complementary vocal-band ducking, capped at 6 dB.
 - An eligible structural outro may add a 10%-wet, 0.7-second stereo room response earlier in the overlap. Its return is gone before the selected incoming vocals.
 - Whole-track WSOLA is used only for an eligible small tempo adjustment (at most 4%), then ramps back to native tempo after the overlap. An isolated percussion loop can separately be stretched by up to 12%.
-- A shared source gain provides the normal output headroom. A stereo-linked peak limiter acts only inside transitions and their tails, keeping output at **−1 dBFS sample peak** without making every later part of the song quieter because of a loud echo.
+- A shared source gain provides the normal output headroom. A stereo-linked peak limiter acts only inside transitions and their tails, keeping output at **−1 dBFS sample peak** without making every later part of the song quieter because of a loud effect.
 
-#### Rhythm, bass, and echo as one handoff
+#### Rhythm, bass, and gradually growing reverb
 
-The room reverb gives the entrance space; the echo adds clearly repeated musical material that remains audible throughout the handoff. The pronounced profile uses an 85% echo send and 78% feedback. Sends take their audio **before** the track's volume and closing low-pass fades, so fading Song 1 does not also erase its echo. Song 2's send opens from 25% and reaches full strength around 60%, using the same selected cue and padded vocal timing as the main track. Repeats alternate emphasis between the ears and follow each deck's measured local beat spacing. If a reliable local pulse is unavailable, that deck uses a 400 ms delay and the inspector reports fixed timing. An 80 ms entrance ramp and preceding Song 1 audio seed the echo without an abrupt click. The repeats are filtered to 200 Hz–6.5 kHz so low bass remains on the dedicated bass layer. Known incoming vocals lower the echo return by 3 dB with smooth attack/release; they do not switch it off.
+There is **no added echo or beat-repeat delay** in new renders. A diffuse stereo reverb gradually lengthens its decay (RT60) from **0.7 seconds at the start to 3.5 seconds at the end** of the overlap. This changes how long the room rings, not just its volume. Three dense, filtered stereo impulse responses are blended by weighting the input sends before convolution: early sound excites the short room and later sound excites the longer room, so each reflection finishes naturally. A 65% wet-send gain makes the space noticeable; this is a gain on the added return, not a 65/35 dry/wet replacement. It has a 30 ms pre-delay, not discrete tempo-synced repeats.
+
+Sends take their audio **before** track fades, preserving the reverb as Song 1 drops away. Song 2's send still opens from 25% and reaches full strength around 60%, using the same cue and padded vocal timing as its dry signal. An 80 ms entrance and 20 ms send-cutoff ramp prevent clicks. Known incoming vocals smoothly lower only the wet return by 3 dB, preserving vocal clarity without moving or skipping them. Existing short entry-room effects, filters, bass exchange and evidence-gated rhythm loops remain intact.
 
 When the evidence supports a rhythm blend, the renderer finds a clean measured bar within the final 30 seconds before Song 1's selected exit. UMX-HQ must cover the entire bar without sustained vocal activity, and both source and target bars must have regular measured beats. Harmonic/percussive separation reduces pitched material, and WSOLA fits the short percussion phrase to Song 2's bar within ±12%. It starts on an incoming downbeat, repeats beneath Song 2 at a noticeable level, and fades out during the final quarter. Missing vocal coverage, unreliable beats, insufficient percussion, or a larger tempo mismatch produces an explicit fallback reason. The renderer never invents a beat grid or loops an unverified vocal phrase.
 
@@ -183,14 +185,15 @@ flowchart LR
   T --> MIX[Dry handoff]
   LOW --> MIX
   P --> MIX
-  T --> E[Beat-timed stereo echo]
+  A --> E[Pre-fade send; diffuse reverb decay 0.7 to 3.5 seconds]
+  B --> E
   P --> E
   E --> W[Wet layer; gently duck during incoming vocals]
   MIX --> OUT[Final rendered timeline]
   W --> OUT
 ```
 
-At the overlap boundary, fresh sends stop while the existing repeats ring over Song 2. A six-second fade brings the echo to exactly zero. Effects are added to absolute positions in the final mix, separate from the original source buffers, so an earlier echo is never fed back into a later transition. Short final recordings clamp the tail to the remaining mix duration. The timeline shows the echo tail, and both WAV export options contain it; a transition clip's existing 20 seconds of following audio includes the full normal tail.
+At the overlap boundary, fresh sends stop while the room rings over Song 2. A six-second fade brings the reverb return to exactly zero. Effects are added at absolute positions in the final mix, separate from source buffers, so earlier reverb is never fed into a later transition. Short final recordings clamp the tail to the remaining duration. The timeline labels the reverb tail; full and transition WAV exports include it. Previously saved echo mixes are not overwritten, and the inspector continues to identify them as echo rather than mislabeling them as the new reverb. Rebuild a mix to hear the new processing.
 
 ### AutoMix versus Plain crossfade
 
@@ -201,8 +204,7 @@ At the overlap boundary, fresh sends stop while the existing repeats ring over S
 | Beat alignment / WSOLA | Evidence-gated | Never |
 | Filters and bass handoff | All AutoMix tiers | No |
 | Vocal duck | Model evidence and eligible tiers | No |
-| Reverb | Incoming room during entry; extra outgoing room on eligible outros | No |
-| Echo | Prominent repeats plus a 6-second fading tail | No |
+| Reverb | Decay grows 0.7 → 3.5 seconds; six-second fading return; short entry room | No |
 | Rhythm loop | Covered clean percussion bar, measured timing, ±12% loop stretch | No |
 
 Plain mode is not a failure path. It is the reference listeners use to decide whether the additional transition logic helped a specific pair.
@@ -239,7 +241,7 @@ A transition entry contains values such as:
   "incoming_vocal_at": 6.0,
   "incoming_fade_start": 0.25,
   "bass_crossover_hz": 180,
-  "echo": {"enabled": true, "profile": "pronounced", "wet": 0.85, "feedback": 0.78, "tail_seconds": 6},
+  "reverb": {"enabled": true, "wet": 0.65, "decay_start_seconds": 0.7, "decay_end_seconds": 3.5, "tail_seconds": 6},
   "rhythm_loop": {"enabled": false, "reason": "No covered instrumental bar with regular measured beats."},
   "timeline_start": 208.07,
   "timeline_end": 220.07,
@@ -256,7 +258,7 @@ Source cue and exit times refer to the original recording. `timeline_start`, `ti
 AutoMix-Lab/
 ├── app.py                    FastAPI server, validation, jobs, and local API
 ├── engine.py                 Decode, analysis, planning, DSP, and WAV renderer
-├── transition_effects.py     Measured percussion loops and finite stereo echo
+├── transition_effects.py     Measured percussion loops and progressive stereo reverb
 ├── vocal_model.py            Pinned UMX-HQ download, verification, and inference
 ├── docker-compose.yml        Local service plus persistent ./data mount
 ├── Dockerfile                Reproducible Python/CPU-model runtime image
@@ -268,7 +270,7 @@ AutoMix-Lab/
 ├── tests/
 │   ├── test_api.py           Validation, jobs, range responses, and persistence
 │   ├── test_engine.py        Planner, DSP, rendering, timeline, and safety tests
-│   ├── test_transition_effects.py  Echo spacing/decay and rhythm-loop evidence
+│   ├── test_transition_effects.py  Reverb decay growth and rhythm-loop evidence
 │   └── test_vocal_model.py   Vocal-model file and inference contract tests
 ├── data/                     Local runtime state; ignored by Git
 │   ├── uploads/              User-provided recordings
@@ -304,7 +306,7 @@ docker compose run --rm automix python -m unittest discover -s tests -q
 node --check static/app.js
 ```
 
-Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 12 second floor, no incoming signal before 25%, filter sweeps, incoming room clearance, vocal collision policy, bass continuity, echo timing/stereo decay, source restoration after the tail, rhythm-loop evidence, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
+Synthetic audio tests verify mechanical behavior that ears alone cannot: cue safety, the 12 second floor, no incoming signal before 25%, filter sweeps, incoming room clearance, vocal collision policy, bass continuity, growing stereo reverb decay, source restoration after the tail, rhythm-loop evidence, clipping protection, and timeline continuity. Listening to real pairs is still required to judge musical quality.
 
 When improving the transition engine:
 

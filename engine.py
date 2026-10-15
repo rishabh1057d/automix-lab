@@ -13,7 +13,7 @@ import numpy as np
 import soundfile as sf
 from scipy import signal
 
-from transition_effects import limit_effect_peak, local_pulse, ping_pong_echo, render_rhythm_loop
+from transition_effects import limit_effect_peak, progressive_reverb, render_rhythm_loop
 
 SR = 44100
 VERSION = "analysis-8-vocal-entry-45s"
@@ -436,8 +436,9 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
             "incoming_delay_seconds": delay, "incoming_vocal_at": entry_at,
             "incoming_fade_start": .25 if not plain else 0.0,
             "bass_crossover_hz": 180 if not plain else 0,
-            "echo": {"enabled": not plain, "profile": "pronounced", "wet": .85, "feedback": .78,
-                     "tail_seconds": 6.0, "vocal_duck_db": 3 if _model_vocals(b) and not plain else 0},
+            "reverb": {"enabled": not plain, "wet": .65, "decay_start_seconds": .7,
+                       "decay_end_seconds": 3.5, "tail_seconds": 6.0,
+                       "vocal_duck_db": 3 if _model_vocals(b) and not plain else 0},
             "confidence": min(ca, cb), "reasons": reasons}
 
 
@@ -551,9 +552,9 @@ def blend_audio(outgoing: np.ndarray, incoming: np.ndarray, plan: dict, *, retur
     return (outgoing, incoming) if return_decks else outgoing + incoming
 
 
-def _echo_vocal_gain(analysis: dict, plan: dict, frames: int) -> np.ndarray:
+def _reverb_vocal_gain(analysis: dict, plan: dict, frames: int) -> np.ndarray:
     """Duck only the wet return, using a small control-rate envelope rather than audio-rate Python."""
-    depth = plan["echo"]["vocal_duck_db"]
+    depth = plan["reverb"]["vocal_duck_db"]
     if not depth:
         return np.ones(frames, np.float32)
     times = np.arange(math.ceil(frames / SR * 100) + 1) / 100
@@ -671,30 +672,21 @@ def render_mix(tracks: list[dict], mode: str, output_dir: Path, cache_dir: Path,
         outgoing_deck, incoming_deck = blend_audio(current[start:end], incoming[:n], plan, return_decks=True)
         blended = outgoing_deck + incoming_deck
         next_audio = incoming[n:]
-        if plan["echo"]["enabled"]:
+        if plan["reverb"]["enabled"]:
             rhythm = render_rhythm_loop(original_current, analyses[i], analyses[i + 1], plan)
             blended += rhythm
-            outgoing_pulse = local_pulse(analyses[i], plan["outgoing_start"], plan["outgoing_end"])
-            incoming_pulse = local_pulse(analyses[i + 1], plan["incoming_cue"],
-                                         min(analyses[i + 1]["content_end"], plan["incoming_cue"] +
-                                             max(0, n / SR - plan["incoming_delay_seconds"]) * plan["incoming_playback_rate"]),
-                                         plan["incoming_playback_rate"])
-            settings = plan["echo"]
-            settings.update(outgoing_delay_seconds=outgoing_pulse or .4, incoming_delay_seconds=incoming_pulse or .4,
-                            outgoing_timing="measured" if outgoing_pulse else "fixed",
-                            incoming_timing="measured" if incoming_pulse else "fixed", send_source="before_track_fades")
-            history = current[max(0, start - round(settings["tail_seconds"] * SR)):start]
+            settings = plan["reverb"]
             progress = np.linspace(0, 1, n, dtype=np.float32)[:, None]
             outgoing_send = current[start:end] * (1 - .65 * np.clip((progress - .65) / .35, 0, 1))
             incoming_send = incoming[:n] * np.clip((progress - .25) / .35, 0, 1)
-            wet = ping_pong_echo(outgoing_send, settings["outgoing_delay_seconds"], history,
-                                 settings["wet"], settings["feedback"], settings["tail_seconds"])
-            wet += ping_pong_echo(incoming_send + rhythm, settings["incoming_delay_seconds"],
-                                  wet=settings["wet"], feedback=settings["feedback"], tail_seconds=settings["tail_seconds"])
-            wet *= _echo_vocal_gain(analyses[i + 1], plan, len(wet))[:, None]
+            wet = progressive_reverb(outgoing_send + incoming_send + rhythm, wet=settings["wet"],
+                                     decay_start_seconds=settings["decay_start_seconds"],
+                                     decay_end_seconds=settings["decay_end_seconds"],
+                                     tail_seconds=settings["tail_seconds"])
+            wet *= _reverb_vocal_gain(analyses[i + 1], plan, len(wet))[:, None]
             effect_beds.append((round(transition_start * SR), wet))
             plan["effects_end"] = plan["timeline_end"] + settings["tail_seconds"]
-            plan["reasons"].append("Strong stereo echoes take their sound before the track fades, follow measured beats where available, and decay for six seconds afterwards; warm source bass transfers on its own envelope.")
+            plan["reasons"].append("Diffuse stereo reverb grows from a 0.7s to a 3.5s decay through the handoff, then fades to dry over six seconds; no added echo repeats. Vocal timing and the warm bass exchange are preserved.")
         else:
             plan["rhythm_loop"] = {"enabled": False, "reason": "Plain comparison uses no rhythm loop."}
         if plan["reverb_wet"]:

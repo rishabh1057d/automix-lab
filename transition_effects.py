@@ -1,5 +1,7 @@
-"""Measured rhythm layers and finite stereo echo, independent of the renderer."""
+"""Measured rhythm layers and diffuse stereo reverb, independent of the renderer."""
 from __future__ import annotations
+
+from functools import lru_cache
 
 import numpy as np
 from scipy import signal
@@ -50,34 +52,43 @@ def local_pulse(analysis: dict, start: float, end: float, rate: float = 1.0) -> 
     return pulse / rate
 
 
-def ping_pong_echo(send: np.ndarray, delay_seconds: float, history: np.ndarray | None = None,
-                   wet: float = .85, feedback: float = .78, tail_seconds: float = 6.0) -> np.ndarray:
-    """Return only repeats; prehistory seeds them without extending the source send."""
-    if not .08 <= delay_seconds <= 6 or not 0 <= feedback < 1 or wet < 0 or tail_seconds < 0:
-        raise ValueError("Echo delay, feedback, wet level or tail is outside its supported range.")
+@lru_cache(maxsize=8)
+def _reverb_ir(decay_seconds: float) -> np.ndarray:
+    predelay = round(.03 * SR)
+    frames = 6 * SR - predelay
+    noise = np.random.default_rng(712).standard_normal((frames, 2))
+    diffuse = signal.sosfilt(signal.butter(3, [200, 6500], "bandpass", fs=SR, output="sos"), noise, axis=0)
+    diffuse *= np.exp(-np.log(1000) * np.arange(frames) / (SR * decay_seconds))[:, None]
+    diffuse /= np.sqrt(np.sum(diffuse ** 2, axis=0, keepdims=True))
+    impulse = np.pad(diffuse.astype(np.float32), ((predelay, 0), (0, 0)))
+    impulse.setflags(write=False)
+    return impulse
+
+
+def progressive_reverb(send: np.ndarray, wet: float = .65, decay_start_seconds: float = .7,
+                       decay_end_seconds: float = 3.5, tail_seconds: float = 6.0) -> np.ndarray:
+    """Return a diffuse wet bed whose newly arriving sound gradually rings longer."""
+    send = np.asarray(send, dtype=np.float32)
+    parameters = [wet, decay_start_seconds, decay_end_seconds, tail_seconds]
+    if (send.ndim != 2 or send.shape[1] != 2 or not np.isfinite(send).all()
+            or not np.isfinite(parameters).all() or not 0 <= wet <= 1
+            or not .1 <= decay_start_seconds <= decay_end_seconds <= 6 or not 0 <= tail_seconds <= 6):
+        raise ValueError("Reverb needs finite stereo audio, wet 0–1, increasing decay 0.1–6s and tail 0–6s.")
     n, tail = len(send), round(tail_seconds * SR)
     output = np.zeros((n + tail, 2), dtype=np.float32)
-    if not n:
+    if not n or not wet or not np.any(send):
         return output
-    prior = np.asarray(history[-6 * SR:] if history is not None else np.empty((0, 2)), dtype=np.float32)
-    source = np.concatenate((prior, np.asarray(send, dtype=np.float32)))
-    filtered = signal.sosfilt(signal.butter(3, [200, 6500], "bandpass", fs=SR, output="sos"),
-                              source, axis=0).astype(np.float32)
-    cutoff = min(n, round(.02 * SR))
-    filtered[-cutoff:] *= np.linspace(1, 0, cutoff, dtype=np.float32)[:, None]
-    delay = max(1, round(delay_seconds * SR))
-    for tap in range(1, max(1, round(6 * SR) // delay) + 1):
-        offset = tap * delay - len(prior)
-        lo, hi = max(0, offset), min(len(output), offset + len(filtered))
-        if hi <= lo:
-            continue
-        emphasis = np.array([1.0, .2] if tap % 2 else [.2, 1.0], dtype=np.float32)
-        # A mid component keeps alternate repeats audible in both ears even for hard-panned sends.
-        chunk = filtered[lo - offset:hi - offset]
-        stereo = .5 * chunk + .5 * chunk.mean(axis=1, keepdims=True)
-        output[lo:hi] += stereo * emphasis * (wet * feedback ** (tap - 1))
-    ramp = min(n, round(.08 * SR))
-    output[:ramp] *= np.linspace(0, 1, ramp, dtype=np.float32)[:, None]
+    source = .5 * send + .5 * send.mean(axis=1, keepdims=True)
+    ramp, cutoff = min(n, round(.08 * SR)), min(n, round(.02 * SR))
+    source[:ramp] *= np.linspace(0, 1, ramp, dtype=np.float32)[:, None]
+    source[-cutoff:] *= np.linspace(1, 0, cutoff, dtype=np.float32)[:, None]
+    progress = np.linspace(0, 2, n, dtype=np.float32)
+    for index, decay in enumerate(np.linspace(decay_start_seconds, decay_end_seconds, 3)):
+        # Morph the send, not the returning tail: late sounds retain their longer decay.
+        weight = np.maximum(0, 1 - np.abs(progress - index))
+        convolved = signal.fftconvolve(source * weight[:, None], _reverb_ir(float(decay)), axes=0)
+        count = min(len(output), len(convolved))
+        output[:count] += convolved[:count] * wet
     if tail:
         output[n:] *= (np.cos(np.linspace(0, np.pi / 2, tail)) ** 2).astype(np.float32)[:, None]
         output[-1] = 0
