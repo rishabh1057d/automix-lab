@@ -35,6 +35,18 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(engine._model_pair_covered(a, b, 40, 20, 12, 1.02, delay=4))
         self.assertFalse(engine._model_pair_covered(a, b, 40, 20, 12, 1.02))
 
+    def test_ranking_cannot_trade_a_short_final_word_for_less_overlap(self):
+        a, b = analysis(), analysis()
+        b["vocal"][24:52] = [1.] * 28
+        a["vocal"][217:219] = [1.] * 2  # 54.25 and 54.50 seconds.
+        self.assertTrue(engine._safe_outro_exit(a, 54))
+        self.assertEqual(engine._vocal_cue_pairs(a, b, [42, 48], 6, 12, 1), (48, 0))
+
+        a["vocal"][217:219] = [0.] * 2
+        a["vocal"][45 * 4:46 * 4] = [1.] * 4
+        a["vocal_windows"] = [[0, 59]]
+        self.assertEqual(engine._vocal_cue_pairs(a, b, [42, 48], 6, 12, 1), (48, 0))
+
     def test_handoff_uses_vocal_beat_energy_or_fallback_evidence(self):
         a, b = analysis(), analysis()
         plan = dict(overlap_seconds=12, incoming_cue=0, incoming_playback_rate=1,

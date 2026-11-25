@@ -288,6 +288,13 @@ def _vocal_cue_pairs(a: dict, b: dict, starts: list, vocal: float, overlap: floa
     fallback = (max(starts), min(cues, key=lambda t: abs(t - target)) if cues else target)
     ranked = []
     for start in starts:
+        if start < fallback[0]:
+            # Check every activity bin intersecting the newly discarded interval.
+            cut, previous_cut = start + overlap, fallback[0] + overlap
+            bins = np.arange(math.floor(cut * 4), math.ceil(previous_cut * 4)) / 4
+            if not (_model_vocals(a) and _covered(a, bins).all() and _covered(a, np.array([cut, previous_cut])).all()
+                    and np.all(_activity(a, bins) < VOCAL_ACTIVE)):
+                continue
         for cue in cues:
             delay, arrival = _vocal_entry_timing(vocal, cue, overlap, rate)
             if not _model_pair_covered(a, b, start, cue, overlap, rate, delay):
