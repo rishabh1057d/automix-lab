@@ -286,7 +286,9 @@ function renderInspector() {
   $("overlap-value").textContent = `${Number(transition.overlap_seconds).toFixed(1)}s`;
   const rate = ((Number(transition.incoming_playback_rate) || 1) - 1) * 100;
   $("tempo-value").textContent = `${rate > 0 ? "+" : ""}${rate.toFixed(1)}%`;
-  const reasons = Array.isArray(transition.reasons) ? transition.reasons : [transition.reasons].filter(Boolean);
+  const reasons = Array.isArray(transition.reasons) ? [...transition.reasons] : [transition.reasons].filter(Boolean);
+  const handoff = transition.handoff;
+  if (handoff?.reason) reasons.unshift(handoff.at_seconds == null ? handoff.reason : `${handoff.reason} The arrival is ${Number(handoff.at_seconds).toFixed(1)}s into the handoff.`);
   $("transition-explanation").textContent = reasons.join(" ") || (state.mode === "plain" ? "A simple equal-power fade lets you compare this queue with the beat-aware AutoMix version." : `The incoming track starts at ${Number(transition.incoming_cue).toFixed(1)} seconds and blends in over ${Number(transition.overlap_seconds).toFixed(1)} seconds.`);
   const confidence = Math.round((Number(transition.confidence) || 0) * 100);
   const vocal = Math.round((Number(transition.vocal_overlap) || 0) * 100);

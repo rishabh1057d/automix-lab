@@ -22,6 +22,71 @@ def analysis(duration=60, bpm=120, confidence=.9, cue=0):
 
 
 class EngineTests(unittest.TestCase):
+    def test_vocal_pair_ranking_depends_on_outgoing_partner(self):
+        a, b = analysis(), analysis()
+        b["vocal"][24:52] = [1.] * 28
+        a["vocal"][44 * 4:46 * 4] = [1.] * 8
+        self.assertEqual(engine._vocal_cue_pairs(a, b, [34, 38], 6, 12, 1), (34, 0))
+        self.assertEqual(engine._vocal_cue_pairs(analysis(), b, [34, 38], 6, 12, 1), (38, 0))
+
+    def test_pair_coverage_uses_the_padded_and_retimed_incoming_window(self):
+        a, b = analysis(), analysis()
+        b["vocal_windows"] = [[20, 30]]
+        self.assertTrue(engine._model_pair_covered(a, b, 40, 20, 12, 1.02, delay=4))
+        self.assertFalse(engine._model_pair_covered(a, b, 40, 20, 12, 1.02))
+
+    def test_handoff_uses_vocal_beat_energy_or_fallback_evidence(self):
+        a, b = analysis(), analysis()
+        plan = dict(overlap_seconds=12, incoming_cue=0, incoming_playback_rate=1,
+                    incoming_delay_seconds=0, incoming_audible_at=0, incoming_vocal_at=6.5,
+                    outgoing_start=40)
+        a["vocal"][46 * 4:48 * 4] = [1.] * 8
+        b["vocal"][6 * 4:8 * 4] = [1.] * 8
+        voice = engine._handoff(a, b, plan)
+        self.assertEqual((voice["event"], voice["at_seconds"], voice["bass_anchor_seconds"]), ("vocal", 6.5, 6))
+        self.assertEqual(voice["outgoing_vocal_duck_db"], 3)
+        padded = dict(plan, incoming_audible_at=6.5, incoming_delay_seconds=6.5)
+        self.assertEqual(engine._handoff(a, b, padded)["event"], "vocal")
+        b["vocal_source"] = "DSP heuristic fallback"
+        self.assertEqual(engine._handoff(a, b, plan)["outgoing_vocal_duck_db"], 0)
+        plan["incoming_vocal_at"] = None
+        self.assertEqual(engine._handoff(a, b, plan)["event"], "beat")
+        b["beats"] = []
+        b["energy"][24:] = [.3] * (len(b["energy"]) - 24)
+        self.assertEqual(engine._handoff(a, b, plan)["event"], "energy")
+        self.assertEqual(engine._handoff(a, b, dict(plan, incoming_vocal_at=3.1))["event"], "fade")
+        self.assertEqual(engine._handoff(a, b, dict(plan, overlap_seconds=2))["event"], "fade")
+
+    def test_adaptive_entry_opens_the_midband_at_vocal_without_moving_entry(self):
+        times = np.arange(6 * engine.SR) / engine.SR
+        incoming = (.1 * np.sin(2 * np.pi * 2800 * times)).astype(np.float32)
+        incoming = np.repeat(incoming[:, None], 2, axis=1)
+        plan = dict(tier="safe-crossfade", overlap_seconds=6)
+        baseline = engine.blend_audio(np.zeros_like(incoming), incoming, plan)
+        adapted = engine.blend_audio(np.zeros_like(incoming), incoming, dict(plan, handoff={
+            "event": "vocal", "at_seconds": 3, "entry_progress_at_arrival": .8}))
+        self.assertFalse(np.any(adapted[:round(1.5 * engine.SR)]))
+        around_vocal = slice(round(2.95 * engine.SR), round(3.05 * engine.SR))
+        self.assertGreater(np.linalg.norm(adapted[around_vocal]), 1.5 * np.linalg.norm(baseline[around_vocal]))
+        np.testing.assert_allclose(adapted[-1], incoming[-1], atol=1e-7)
+
+    def test_weak_bass_does_not_claim_a_beat_led_handoff(self):
+        silent = np.zeros((4 * engine.SR, 2), dtype=np.float32)
+        plan = dict(tier="dj-assisted", overlap_seconds=4, bass_crossover_hz=180,
+                    bass_handoff_seconds=2.2, handoff={"event": "beat", "at_seconds": 2,
+                                                       "bass_anchor_seconds": 2})
+        engine.blend_audio(silent, silent, plan)
+        self.assertEqual(plan["handoff"]["event"], "fade")
+        self.assertAlmostEqual(plan["bass_handoff_start_seconds"], 1.8)
+
+    def test_reverb_duck_can_start_before_the_incoming_line(self):
+        plan = dict(reverb={"vocal_duck_db": 3}, incoming_delay_seconds=0, incoming_cue=0,
+                    overlap_seconds=6, source_resume=0, handoff={"event": "vocal", "at_seconds": 3})
+        envelope = engine._reverb_vocal_gain(analysis(), plan, 6 * engine.SR)
+        self.assertAlmostEqual(float(envelope[2 * engine.SR]), 1)
+        self.assertLess(float(envelope[round(2.9 * engine.SR)]), .8)
+        self.assertGreater(float(envelope[-1]), .99)
+
     def test_policy_tempo_cap_octaves_and_short_tracks(self):
         for bpm, expected in [(120, "beatmatched"), (60, "beatmatched"), (115, "dj-assisted")]:
             plan = engine.plan_transition(analysis(), analysis(bpm=bpm))

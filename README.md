@@ -118,6 +118,8 @@ The detector joins vocal gaps of at most 0.75 seconds and requires three seconds
 
 Weak BPM, missing downbeats, unusual tempo, or short material selects a safe crossfade. The engine does not claim beat precision it cannot support.
 
+When the model covers both tracks, AutoMix ranks eligible cue pairs by outgoing vocal activity around the incoming first line, then by vocal overlap across the handoff. It maps the incoming samples with the planned delay and playback rate. The outgoing safety checks and the manual verse timestamp still apply.
+
 #### Transition length
 
 AutoMix has a **12 second minimum** whenever both selected source regions contain at least 12 seconds of usable audio. Structural/tempo evidence may choose longer overlaps up to **16 seconds**. Vocal conflict handling cannot shorten AutoMix under that floor; it uses complementary ducking where evidence supports it.
@@ -125,6 +127,8 @@ AutoMix has a **12 second minimum** whenever both selected source regions contai
 For physically short material, the plan uses the longest possible overlap and explicitly explains the exception. Plain crossfade remains a simpler 6 second reference, shortened only when a tiny source makes that impossible.
 
 ### 4. Render the handoff
+
+The planner chooses one arrival in the rendered overlap. A sustained vocal opens the incoming filter and gain sooner, with brief outgoing vocal-band attenuation when both singers are active. A measured incoming downbeat can guide the bass exchange if the incoming bass is audible. A sustained energy rise can guide the filter and gain when beat evidence is weak. Other pairs use the conservative fade. The `handoff` field in the plan JSON and the inspector explain the event in seconds from the start of the overlap. This uses existing cached measurements and reuses the current filter and reverb passes.
 
 `engine.render_mix()` processes the queue left-to-right. It tracks source/output offsets so later transitions refer to the right portion of a track that was already introduced in an earlier overlap.
 
