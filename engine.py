@@ -430,7 +430,8 @@ def plan_transition(a: dict, b: dict, mode: str = "automix", vocal_entry_overrid
             reasons.append("Vocal entry has no nearby measured downbeat; tempo stretching is disabled.")
     delay, entry_at = _vocal_entry_timing(vocal_entry, cue, overlap, rate) if vocal_entry is not None else (0.0, None)
     clash = _clash(a, b, start, cue, overlap, rate, delay)
-    vocal_evidence = ("model" if _model_pair_covered(a, b, start, cue, overlap, rate, delay) else
+    coverage_delay = delay if vocal_entry is not None else None
+    vocal_evidence = ("model" if _model_pair_covered(a, b, start, cue, overlap, rate, coverage_delay) else
                       "heuristic" if "heuristic" in (a.get("vocal_source", "") + b.get("vocal_source", "")).lower()
                       else "unavailable")
     if not plain and tier != "safe-crossfade" and vocal_evidence == "model" and clash > .05:

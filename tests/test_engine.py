@@ -57,6 +57,17 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(engine._safe_outro_exit(a, 84))
         self.assertEqual(engine.plan_transition(a, b)["outgoing_end"], 100)
 
+    def test_partial_coverage_does_not_unlock_legacy_overlap_shortening(self):
+        a, b = analysis(106, bpm=60), analysis(106, bpm=60)
+        a.update(downbeats=[90], vocal_windows=[[94, 106]], mix_out_candidates=[{
+            "time": 95, "type": "sustained_outro_drop"}])
+        b.update(downbeats=[0])
+        for frame in (49, 50, 51, 57):
+            a["vocal"][90 * 4 + frame] = b["vocal"][frame] = 1.
+        self.assertTrue(engine._safe_outro_exit(a, 102))
+        plan = engine.plan_transition(a, b)
+        self.assertEqual((plan["overlap_seconds"], plan["outgoing_end"]), (16, 106))
+
     def test_handoff_uses_vocal_beat_energy_or_fallback_evidence(self):
         a, b = analysis(), analysis()
         plan = dict(overlap_seconds=12, incoming_cue=0, incoming_playback_rate=1,
