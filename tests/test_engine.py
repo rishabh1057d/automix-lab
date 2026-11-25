@@ -49,9 +49,12 @@ class EngineTests(unittest.TestCase):
     def test_short_vocal_does_not_enable_a_new_partially_covered_exit(self):
         a, b = analysis(105), analysis(105)
         a.update(content_end=100, downbeats=[72, 88], vocal_windows=[[75, 105]])
+        a["energy"][84 * 4:] = [0.] * ((105 - 84) * 4)
+        a["energy"][399] = .1
         a["vocal"][374:376] = [1.] * 2
         b.update(downbeats=[0])
         b["vocal"][22:24] = [1.] * 2
+        self.assertTrue(engine._safe_outro_exit(a, 84))
         self.assertEqual(engine.plan_transition(a, b)["outgoing_end"], 100)
 
     def test_handoff_uses_vocal_beat_energy_or_fallback_evidence(self):
