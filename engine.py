@@ -232,9 +232,13 @@ def _clash(a: dict, b: dict, start: float, cue: float, duration: float, rate: fl
 
 
 def _model_pair_covered(a: dict, b: dict, start: float, cue: float, duration: float, rate: float,
-                        delay: float = 0) -> bool:
-    times = np.arange(0, duration, .25)
-    times = times[times >= max(.25 * duration, delay)]
+                        delay: float | None = None) -> bool:
+    times = np.arange(0, max(.25, duration), .25)
+    if delay is not None:
+        times = times[(times < duration) & (times >= max(.25 * duration, delay))]
+    else:
+        # The existing no-phrase search requires evidence across the whole overlap.
+        delay = 0.0
     return (_model_vocals(a) and _model_vocals(b) and
             len(times) > 0 and bool(_covered(a, start + times).all()) and
             bool(_covered(b, cue + (times - delay) * rate).all()))

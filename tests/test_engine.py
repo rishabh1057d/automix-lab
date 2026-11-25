@@ -43,9 +43,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(engine._vocal_cue_pairs(a, b, [42, 48], 6, 12, 1), (48, 0))
 
         a["vocal"][217:219] = [0.] * 2
-        a["vocal"][45 * 4:46 * 4] = [1.] * 4
         a["vocal_windows"] = [[0, 59]]
         self.assertEqual(engine._vocal_cue_pairs(a, b, [42, 48], 6, 12, 1), (48, 0))
+
+    def test_short_vocal_does_not_enable_a_new_partially_covered_exit(self):
+        a, b = analysis(105), analysis(105)
+        a.update(content_end=100, downbeats=[72, 88], vocal_windows=[[75, 105]])
+        a["vocal"][374:376] = [1.] * 2
+        b.update(downbeats=[0])
+        b["vocal"][22:24] = [1.] * 2
+        self.assertEqual(engine.plan_transition(a, b)["outgoing_end"], 100)
 
     def test_handoff_uses_vocal_beat_energy_or_fallback_evidence(self):
         a, b = analysis(), analysis()
